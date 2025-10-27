@@ -129,10 +129,13 @@ RUN --mount=type=cache,target=/var/cache/apt \
 
 # install python dependencies
 COPY --chown=$UID:$GID ./backend/requirements.txt ./requirements.txt
+COPY --chown=$UID:$GID ./backend/requirements-slim.txt ./requirements-slim.txt
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir uv && \
-    if [ "$USE_SLIM" != "true" ]; then \
+    if [ "$USE_SLIM" = "true" ]; then \
+      uv pip install --system -r requirements-slim.txt --no-cache-dir; \
+    else \
       if [ "$USE_CUDA" = "true" ]; then \
         pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/"${USE_CUDA_DOCKER_VER:-cu121}" --no-cache-dir && \
         uv pip install --system -r requirements.txt --no-cache-dir && \
