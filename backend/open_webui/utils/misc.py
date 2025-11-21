@@ -541,7 +541,7 @@ def extract_urls(text: str) -> list[str]:
     return url_pattern.findall(text)
 
 
-def make_json_safe(obj, max_depth=10, _current_depth=0):
+def make_json_safe(obj, max_depth=10, max_str_length=100, _current_depth=0):
     """
     Recursively convert an object to be JSON-serializable.
     
@@ -552,6 +552,7 @@ def make_json_safe(obj, max_depth=10, _current_depth=0):
     
     :param obj: The object to make JSON-safe
     :param max_depth: Maximum recursion depth to prevent infinite loops
+    :param max_str_length: Maximum length for string representation of non-serializable objects
     :param _current_depth: Current recursion depth (internal use)
     :return: A JSON-serializable version of the object
     """
@@ -566,21 +567,21 @@ def make_json_safe(obj, max_depth=10, _current_depth=0):
     # Handle lists, tuples, and sets
     if isinstance(obj, (list, tuple, set)):
         try:
-            return [make_json_safe(item, max_depth, _current_depth + 1) for item in obj]
-        except Exception as e:
+            return [make_json_safe(item, max_depth, max_str_length, _current_depth + 1) for item in obj]
+        except (TypeError, ValueError, RecursionError) as e:
             log.warning(f"Error converting sequence to JSON-safe: {e}")
-            return f"<error converting {type(obj).__name__}>: {str(e)}"
+            return f"<error converting {type(obj).__name__}>: {str(e)[:50]}"
     
     # Handle dictionaries
     if isinstance(obj, dict):
         try:
             return {
-                str(k): make_json_safe(v, max_depth, _current_depth + 1)
+                str(k): make_json_safe(v, max_depth, max_str_length, _current_depth + 1)
                 for k, v in obj.items()
             }
-        except Exception as e:
+        except (TypeError, ValueError, RecursionError) as e:
             log.warning(f"Error converting dict to JSON-safe: {e}")
-            return f"<error converting dict>: {str(e)}"
+            return f"<error converting dict>: {str(e)[:50]}"
     
     # For everything else (functions, class instances, etc.), convert to string
     try:
@@ -590,6 +591,7 @@ def make_json_safe(obj, max_depth=10, _current_depth=0):
     except (TypeError, ValueError):
         # Not JSON-serializable, convert to string representation
         try:
-            return f"<{type(obj).__name__}: {str(obj)[:100]}>"
+            return f"<{type(obj).__name__}: {str(obj)[:max_str_length]}>"
         except Exception:
+            # Fallback if str() fails
             return f"<{type(obj).__name__}>"

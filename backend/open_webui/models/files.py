@@ -125,18 +125,22 @@ class FilesTable:
             except Exception as e:
                 log.exception(f"Error inserting a new file: {e}")
                 # Log additional debug info for JSON serialization errors
-                try:
-                    log.error(f"File data structure - data type: {type(form_data.data)}, meta type: {type(form_data.meta)}")
-                    # Try to serialize to identify problematic fields
-                    json.dumps(form_data.data)
-                    log.debug("form_data.data is JSON-serializable")
-                except (TypeError, ValueError) as json_err:
-                    log.error(f"form_data.data is NOT JSON-serializable: {json_err}")
-                try:
-                    json.dumps(form_data.meta)
-                    log.debug("form_data.meta is JSON-serializable")
-                except (TypeError, ValueError) as json_err:
-                    log.error(f"form_data.meta is NOT JSON-serializable: {json_err}")
+                # Only perform expensive serialization checks if it's actually a JSON error
+                if "JSON" in str(e) or "serializable" in str(e).lower():
+                    try:
+                        log.error(f"File data structure - data type: {type(form_data.data)}, meta type: {type(form_data.meta)}")
+                        # Try to serialize to identify problematic fields (with size limit for safety)
+                        if form_data.data:
+                            json.dumps(form_data.data)
+                            log.debug("form_data.data is JSON-serializable")
+                    except (TypeError, ValueError) as json_err:
+                        log.error(f"form_data.data is NOT JSON-serializable: {str(json_err)[:200]}")
+                    try:
+                        if form_data.meta:
+                            json.dumps(form_data.meta)
+                            log.debug("form_data.meta is JSON-serializable")
+                    except (TypeError, ValueError) as json_err:
+                        log.error(f"form_data.meta is NOT JSON-serializable: {str(json_err)[:200]}")
                 return None
 
     def get_file_by_id(self, id: str) -> Optional[FileModel]:
