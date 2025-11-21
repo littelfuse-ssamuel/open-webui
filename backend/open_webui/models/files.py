@@ -1,5 +1,6 @@
 import logging
 import time
+import json
 from typing import Optional
 
 from open_webui.internal.db import Base, JSONField, get_db
@@ -123,6 +124,19 @@ class FilesTable:
                     return None
             except Exception as e:
                 log.exception(f"Error inserting a new file: {e}")
+                # Log additional debug info for JSON serialization errors
+                try:
+                    log.error(f"File data structure - data type: {type(form_data.data)}, meta type: {type(form_data.meta)}")
+                    # Try to serialize to identify problematic fields
+                    json.dumps(form_data.data)
+                    log.debug("form_data.data is JSON-serializable")
+                except (TypeError, ValueError) as json_err:
+                    log.error(f"form_data.data is NOT JSON-serializable: {json_err}")
+                try:
+                    json.dumps(form_data.meta)
+                    log.debug("form_data.meta is JSON-serializable")
+                except (TypeError, ValueError) as json_err:
+                    log.error(f"form_data.meta is NOT JSON-serializable: {json_err}")
                 return None
 
     def get_file_by_id(self, id: str) -> Optional[FileModel]:

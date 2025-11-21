@@ -41,6 +41,7 @@ from open_webui.routers.retrieval import ProcessFileForm, process_file
 from open_webui.routers.audio import transcribe
 from open_webui.storage.provider import Storage
 from open_webui.utils.auth import get_admin_user, get_verified_user
+from open_webui.utils.misc import make_json_safe
 from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
@@ -229,6 +230,11 @@ def upload_file_handler(
                 detail=ERROR_MESSAGES.DEFAULT("Invalid metadata format"),
             )
     file_metadata = metadata if metadata else {}
+    
+    # Sanitize metadata to ensure it's JSON-serializable
+    # This is critical for server-side file uploads (e.g., Excel artifacts from base64)
+    # where metadata may contain non-serializable objects like MCP clients, tool objects, etc.
+    file_metadata = make_json_safe(file_metadata)
 
     try:
         unsanitized_filename = file.filename

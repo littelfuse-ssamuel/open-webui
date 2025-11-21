@@ -539,3 +539,57 @@ def extract_urls(text: str) -> list[str]:
         r"(https?://[^\s]+)", re.IGNORECASE
     )  # Matches http and https URLs
     return url_pattern.findall(text)
+
+
+def make_json_safe(obj, max_depth=10, _current_depth=0):
+    """
+    Recursively convert an object to be JSON-serializable.
+    
+    - Primitives (str, int, float, bool, None) are left as-is
+    - Lists, tuples, sets are converted to lists (recursively)
+    - Dicts are converted to dicts with JSON-safe values (recursively)
+    - Non-serializable objects (functions, class instances, etc.) are converted to their string representation
+    
+    :param obj: The object to make JSON-safe
+    :param max_depth: Maximum recursion depth to prevent infinite loops
+    :param _current_depth: Current recursion depth (internal use)
+    :return: A JSON-serializable version of the object
+    """
+    # Prevent infinite recursion
+    if _current_depth > max_depth:
+        return f"<max depth exceeded: {type(obj).__name__}>"
+    
+    # None and primitives are JSON-safe
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    
+    # Handle lists, tuples, and sets
+    if isinstance(obj, (list, tuple, set)):
+        try:
+            return [make_json_safe(item, max_depth, _current_depth + 1) for item in obj]
+        except Exception as e:
+            log.warning(f"Error converting sequence to JSON-safe: {e}")
+            return f"<error converting {type(obj).__name__}>: {str(e)}"
+    
+    # Handle dictionaries
+    if isinstance(obj, dict):
+        try:
+            return {
+                str(k): make_json_safe(v, max_depth, _current_depth + 1)
+                for k, v in obj.items()
+            }
+        except Exception as e:
+            log.warning(f"Error converting dict to JSON-safe: {e}")
+            return f"<error converting dict>: {str(e)}"
+    
+    # For everything else (functions, class instances, etc.), convert to string
+    try:
+        # Try json.dumps to see if it's already serializable
+        json.dumps(obj)
+        return obj
+    except (TypeError, ValueError):
+        # Not JSON-serializable, convert to string representation
+        try:
+            return f"<{type(obj).__name__}: {str(obj)[:100]}>"
+        except Exception:
+            return f"<{type(obj).__name__}>"
