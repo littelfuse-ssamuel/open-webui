@@ -251,7 +251,7 @@ class Loader:
             loader = YoutubeLoader.from_youtube_url(
                 file_path, add_video_info=True, language="en"
             )
-        elif engine == "web":
+        elif engine == "web" or engine == "external":
             log.info(f"_get_loader: Using ExternalDocumentLoader with extract_images={self.kwargs.get('PDF_EXTRACT_IMAGES')}")
             loader = ExternalDocumentLoader(
                 url=self.kwargs.get("EXTERNAL_DOCUMENT_LOADER_URL"),
