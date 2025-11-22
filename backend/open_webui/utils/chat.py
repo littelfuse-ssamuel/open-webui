@@ -219,8 +219,29 @@ async def generate_chat_completion(
             if documents:
                 log.info(f"Found {len(documents)} files in message attachments")
     
-    log.info(f"Documents to process: {len(documents)}")
-    
+    log.info(f"Documents to process before dedup: {len(documents)}")
+
+    # Deduplicate documents by ID to prevent duplicate images being added
+    if documents:
+        seen_doc_ids = set()
+        unique_documents = []
+        for doc in documents:
+            doc_id = doc.get("id")
+            if doc_id and doc_id not in seen_doc_ids:
+                unique_documents.append(doc)
+                seen_doc_ids.add(doc_id)
+            elif doc_id:
+                log.warning(f"Skipping duplicate document: {doc_id}")
+            else:
+                # Keep documents without IDs (shouldn't happen but be safe)
+                unique_documents.append(doc)
+
+        if len(documents) != len(unique_documents):
+            log.info(f"Deduplicated documents: {len(documents)} -> {len(unique_documents)}")
+        documents = unique_documents
+
+    log.info(f"Documents to process after dedup: {len(documents)}")
+
     if vision_capable and documents:
         log.info(f"Processing {len(documents)} documents for vision model")
         last_user_message = None
@@ -238,6 +259,24 @@ async def generate_chat_completion(
             elif not last_user_message.get("content"):
                 last_user_message["content"] = []
 
+            # Build a set of existing image signatures to detect true duplicates
+            # We use the first 200 chars of the base64 data URL as a signature
+            # (enough to be unique while avoiding full string comparison)
+            existing_image_signatures = set()
+            for item in last_user_message.get("content", []):
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    url = item.get("image_url", {}).get("url", "")
+                    if url.startswith("data:image/"):
+                        # Use first 200 chars as signature (includes mime type + start of base64)
+                        existing_image_signatures.add(url[:200])
+
+            log.info(f"Found {len(existing_image_signatures)} existing images in message content")
+
+            # Track seen image paths to prevent duplicate images across documents
+            seen_image_paths = set()
+            images_added = 0
+            images_skipped_duplicate = 0
+
             for doc in documents:
                 doc_id = doc.get("id")
                 if not doc_id:
@@ -253,6 +292,13 @@ async def generate_chat_completion(
                 if file_model.image_refs:
                     for i, image_ref in enumerate(file_model.image_refs):
                         try:
+                            # Skip duplicate images (same path already processed in this request)
+                            if image_ref in seen_image_paths:
+                                log.warning(f"Skipping duplicate image path: {image_ref}")
+                                images_skipped_duplicate += 1
+                                continue
+                            seen_image_paths.add(image_ref)
+
                             image_path = os.path.join(DATA_DIR, image_ref)
                             log.info(f"Loading image {i+1}/{len(file_model.image_refs)}: {image_ref}")
 
@@ -271,18 +317,32 @@ async def generate_chat_completion(
                                         '.webp': 'image/webp'
                                     }.get(ext, 'image/jpeg')
 
+                                    # Build the data URL
+                                    data_url = f"data:{mime_type};base64,{encoded_string}"
+
+                                    # Check if this exact image already exists in message content
+                                    # (from a previous conversation turn)
+                                    image_signature = data_url[:200]
+                                    if image_signature in existing_image_signatures:
+                                        log.info(f"Skipping image already in message content: {image_ref}")
+                                        images_skipped_duplicate += 1
+                                        continue
+
                                     # CORRECT OpenAI Vision API format
                                     image_content = {
                                         "type": "image_url",
                                         "image_url": {
-                                            "url": f"data:{mime_type};base64,{encoded_string}",
+                                            "url": data_url,
                                             "detail": "high"  # Options: "low", "high", "auto"
                                         }
                                     }
-                                    
+
                                     last_user_message["content"].append(image_content)
+                                    # Add to existing signatures so we don't add it again
+                                    existing_image_signatures.add(image_signature)
+                                    images_added += 1
                                     log.info(f"Successfully added image {i+1} to message content: {image_ref}")
-                                    
+
                                     # Debug: Log the structure being added
                                     log.debug(f"Image content structure: {{'type': 'image_url', 'image_url': {{'url': 'data:{mime_type};base64,[{len(encoded_string)} chars]', 'detail': 'high'}}}}")
                             else:
@@ -293,7 +353,13 @@ async def generate_chat_completion(
                             log.error(f"Traceback: {traceback.format_exc()}")
                 else:
                     log.warning(f"No images found in document {doc_id}")
-                    
+
+            # Log deduplication summary
+            if images_skipped_duplicate > 0:
+                log.info(f"Image deduplication summary: {images_added} added, {images_skipped_duplicate} duplicates skipped")
+            else:
+                log.info(f"Image processing complete: {images_added} images added (no duplicates found)")
+
             # Log the final message content structure
             log.info("=== FINAL MESSAGE CONTENT STRUCTURE ===")
             log.info(f"Message role: {last_user_message.get('role')}")
