@@ -187,6 +187,31 @@
 		}
 	};
 
+	const openExcelArtifact = (file: any) => {
+		// Find the index of this excel file in artifactContents
+		const currentContents = $artifactContents;
+		const excelIndex = currentContents.findIndex(
+			(c) => c.type === 'excel' && c.url === file.url
+		);
+
+		// Open artifacts panel
+		showArtifacts.set(true);
+
+		// If not found, add it to artifacts
+		if (excelIndex === -1) {
+			artifactContents.set([
+				...currentContents,
+				{
+					type: 'excel',
+					url: file.url,
+					name: file.name,
+					fileId: file.fileId,
+					meta: file.meta
+				}
+			]);
+		}
+	};
+
 	const stopAudio = () => {
 		try {
 			speechSynthesis.cancel();
@@ -644,9 +669,11 @@
 							</div>
 						{/if}
 
-						{#if message?.files && message.files?.filter((f) => f.type === 'excel').length > 0}
+						{#if message?.files}
+							{@const excelFiles = message.files.filter((f) => f.type === 'excel')}
+							{#if excelFiles.length > 0}
 							<div class="my-1 w-full flex overflow-x-auto gap-2 flex-wrap">
-								{#each message.files.filter((f) => f.type === 'excel') as file}
+								{#each excelFiles as file}
 									<div class="flex items-center gap-2">
 										<FileItem
 											item={file}
@@ -659,28 +686,7 @@
 										<button
 											class="px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors"
 											on:click={() => {
-												// Find the index of this excel file in artifactContents
-												const currentContents = $artifactContents;
-												const excelIndex = currentContents.findIndex(
-													(c) => c.type === 'excel' && c.url === file.url
-												);
-												
-												// Open artifacts panel
-												showArtifacts.set(true);
-												
-												// If not found, add it to artifacts
-												if (excelIndex === -1) {
-													artifactContents.set([
-														...currentContents,
-														{
-															type: 'excel',
-															url: file.url,
-															name: file.name,
-															fileId: file.fileId,
-															meta: file.meta
-														}
-													]);
-												}
+												openExcelArtifact(file);
 											}}
 										>
 											<svg xmlns="http://www.w3.org/2000/svg" class="inline-block w-4 h-4 mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -692,6 +698,7 @@
 									</div>
 								{/each}
 							</div>
+								{/if}
 						{/if}
 
 						{#if message?.embeds && message.embeds.length > 0}
