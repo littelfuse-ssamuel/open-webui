@@ -187,7 +187,9 @@
 		}
 	};
 
-	const openExcelArtifact = (file: any) => {
+	// Opens an Excel file in the artifact panel
+	// file should have: type, url, name, fileId, meta
+	const openExcelArtifact = (file: { type: string; url: string; name: string; fileId?: string; meta?: any }) => {
 		// Find the index of this excel file in artifactContents
 		const currentContents = $artifactContents;
 		const excelIndex = currentContents.findIndex(
@@ -698,7 +700,7 @@
 									</div>
 								{/each}
 							</div>
-								{/if}
+							{/if}
 						{/if}
 
 						{#if message?.embeds && message.embeds.length > 0}
