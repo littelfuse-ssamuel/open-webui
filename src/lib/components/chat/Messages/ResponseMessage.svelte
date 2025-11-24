@@ -22,7 +22,9 @@
 		settings,
 		temporaryChatEnabled,
 		TTSWorker,
-		user
+		user,
+		showArtifacts,
+		artifactContents
 	} from '$lib/stores';
 	import { synthesizeOpenAISpeech } from '$lib/apis/audio';
 	import { imageGenerations } from '$lib/apis/images';
@@ -637,6 +639,56 @@
 												small={true}
 											/>
 										{/if}
+									</div>
+								{/each}
+							</div>
+						{/if}
+
+						{#if message?.files && message.files?.filter((f) => f.type === 'excel').length > 0}
+							<div class="my-1 w-full flex overflow-x-auto gap-2 flex-wrap">
+								{#each message.files.filter((f) => f.type === 'excel') as file}
+									<div class="flex items-center gap-2">
+										<FileItem
+											item={file}
+											url={file.url}
+											name={file.name}
+											type={file.type}
+											size={file?.size}
+											small={true}
+										/>
+										<button
+											class="px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+											on:click={() => {
+												// Find the index of this excel file in artifactContents
+												const currentContents = $artifactContents;
+												const excelIndex = currentContents.findIndex(
+													(c) => c.type === 'excel' && c.url === file.url
+												);
+												
+												// Open artifacts panel
+												showArtifacts.set(true);
+												
+												// If not found, add it to artifacts
+												if (excelIndex === -1) {
+													artifactContents.set([
+														...currentContents,
+														{
+															type: 'excel',
+															url: file.url,
+															name: file.name,
+															fileId: file.fileId,
+															meta: file.meta
+														}
+													]);
+												}
+											}}
+										>
+											<svg xmlns="http://www.w3.org/2000/svg" class="inline-block w-4 h-4 mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+												<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
+												<path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+											</svg>
+											View Spreadsheet
+										</button>
 									</div>
 								{/each}
 							</div>
