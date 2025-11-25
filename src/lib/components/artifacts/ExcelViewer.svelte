@@ -243,12 +243,29 @@
 		});
 		univer.registerPlugin(UniverDocsPlugin);
 		univer.registerPlugin(UniverDocsUIPlugin);
-		univer.registerPlugin(UniverSheetsPlugin);
+		univer.registerPlugin(UniverSheetsPlugin, {
+			notExecuteFormula: false
+		});
+		univer.registerPlugin(UniverSheetsUIPlugin, {
+			clipboardConfig: {
+				enabled: true
+			}
+		});
 		univer.registerPlugin(UniverSheetsUIPlugin);
 		univer.registerPlugin(UniverSheetsFormulaPlugin);
 
 		// Create workbook with data
 		univer.createUnit(UniverInstanceType.UNIVER_SHEET, data);
+
+		// Focus container to enable keyboard input
+		setTimeout(() => {
+			if (containerElement) {
+				const canvas = containerElement.querySelector('canvas');
+				if (canvas) {
+					canvas.focus();
+				}
+			}
+		}, 100);
 
 		// Get Facade API for easier interaction
 		univerAPI = FUniver.newAPI(univer);

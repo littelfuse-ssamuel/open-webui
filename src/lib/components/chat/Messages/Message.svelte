@@ -81,6 +81,7 @@
 				{selectedModels}
 				isLastMessage={messageId === history.currentId}
 				siblings={history.messages[history.messages[messageId].parentId]?.childrenIds ?? []}
+				on:openExcelArtifact
 				{setInputText}
 				{gotoMessage}
 				{showPreviousMessage}

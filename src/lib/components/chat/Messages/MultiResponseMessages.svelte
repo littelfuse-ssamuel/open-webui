@@ -325,6 +325,7 @@
 									{addMessages}
 									{readOnly}
 									{topPadding}
+									on:openExcelArtifact
 								/>
 							{/if}
 						{/key}
@@ -382,6 +383,7 @@
 										{readOnly}
 										{editCodeBlock}
 										{topPadding}
+										on:openExcelArtifact
 									/>
 								{/if}
 							{/key}
