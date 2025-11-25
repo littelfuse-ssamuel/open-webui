@@ -474,10 +474,6 @@
 	}
 
 	onMount(() => {
-		if (file?.url) {
-			loadWorkbook();
-		}
-
 		document.addEventListener('fullscreenchange', handleFullscreenChange);
 		window.addEventListener('beforeunload', handleBeforeUnload);
 	});
