@@ -498,8 +498,14 @@
 		}
 	});
 
-	// Reactive: reload if file URL changes
-	$: if (file?.url && containerElement && !univerLoaded) {
+	// Add this variable to track the loaded URL preventing loops
+	let currentLoadedUrl = '';
+
+	// Reactive: reload ONLY if the specific file URL has changed
+	$: if (file?.url && containerElement && file.url !== currentLoadedUrl) {
+		currentLoadedUrl = file.url;
+		// Reset loading state if needed when URL changes
+		univerLoaded = false; 
 		loadWorkbook();
 	}
 
