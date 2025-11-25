@@ -72,11 +72,23 @@
 	};
 
 	const showFullScreen = () => {
-		if (iframeElement.requestFullscreen) {
+		const content = contents[selectedContentIdx];
+
+		// For Excel, fullscreen is handled by the ExcelViewer component itself
+		if (content?.type === 'excel') {
+			const excelContainer = document.querySelector('.excel-viewer-wrapper');
+			if (excelContainer?.requestFullscreen) {
+				excelContainer.requestFullscreen();
+			}
+			return;
+		}
+
+		// For iframe content
+		if (iframeElement?.requestFullscreen) {
 			iframeElement.requestFullscreen();
-		} else if (iframeElement.webkitRequestFullscreen) {
+		} else if (iframeElement?.webkitRequestFullscreen) {
 			iframeElement.webkitRequestFullscreen();
-		} else if (iframeElement.msRequestFullscreen) {
+		} else if (iframeElement?.msRequestFullscreen) {
 			iframeElement.msRequestFullscreen();
 		}
 	};
@@ -196,17 +208,17 @@
 					</div>
 
 					<div class="flex items-center gap-1.5">
-						<button
-							class="copy-code-button bg-none border-none text-xs bg-gray-50 hover:bg-gray-100 dark:bg-gray-850 dark:hover:bg-gray-800 transition rounded-md px-1.5 py-0.5"
-							on:click={() => {
-								copyToClipboard(contents[selectedContentIdx].content);
-								copied = true;
-
-								setTimeout(() => {
-									copied = false;
-								}, 2000);
-							}}>{copied ? $i18n.t('Copied') : $i18n.t('Copy')}</button
-						>
+						{#if contents[selectedContentIdx].type !== 'excel'}
+							<button
+								class="copy-code-button bg-none border-none text-xs bg-gray-50 hover:bg-gray-100 dark:bg-gray-850 dark:hover:bg-gray-800 transition rounded-md px-1.5 py-0.5"
+								on:click={() => {
+									copyToClipboard(contents[selectedContentIdx].content);
+									copied = true;
+									setTimeout(() => {
+										copied = false;
+									}, 2000);
+								}}>{copied ? $i18n.t('Copied') : $i18n.t('Copy')}</button>
+						{/if}
 
 						<Tooltip content={$i18n.t('Download')}>
 							<button
@@ -217,7 +229,7 @@
 							</button>
 						</Tooltip>
 
-						{#if contents[selectedContentIdx].type === 'iframe'}
+						{#if contents[selectedContentIdx].type === 'iframe' || contents[selectedContentIdx].type === 'excel'}
 							<Tooltip content={$i18n.t('Open in full screen')}>
 								<button
 									class=" bg-none border-none text-xs bg-gray-50 hover:bg-gray-100 dark:bg-gray-850 dark:hover:bg-gray-800 transition rounded-md p-0.5"

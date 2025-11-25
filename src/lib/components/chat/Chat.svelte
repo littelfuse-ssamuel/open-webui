@@ -849,6 +849,19 @@
 		artifactContents.set([]);
 	}
 
+	const getArtifact = () => {
+			const messages = history ? createMessagesList(history, history.currentId) : [];
+			for (const message of messages) {
+				if (message.files?.some((f) => f.type === 'excel')) {
+					const excelFile = message.files.find((f) => f.type === 'excel');
+					return $artifactContents.find(
+						(content) => content.type === 'excel' && content.fileId === excelFile.fileId
+					);
+				}
+			}
+			return null;
+	};
+
 	const getContents = () => {
 		const messages = history ? createMessagesList(history, history.currentId) : [];
 		let contents = [];
@@ -2537,6 +2550,21 @@
 										topPadding={true}
 										bottomPadding={files.length > 0}
 										{onSelect}
+										on:openExcelArtifact={(e) => {
+											// Matches the event dispatched from ResponseMessage.svelte
+											const excelArtifact = getArtifact();
+
+											if (excelArtifact) {
+												// Excel already in artifacts, just open it
+												showArtifacts.set(true);
+												showControls.set(true);
+											} else {
+												// Excel not in artifacts, refresh and open
+												getContents();
+												showArtifacts.set(true);
+												showControls.set(true);
+											}
+										}}
 									/>
 								</div>
 							</div>
