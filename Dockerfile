@@ -36,7 +36,7 @@ RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
-    npm install
+    npm ci --force
 
 COPY . .
 ENV APP_BUILD_HASH=${BUILD_HASH}
