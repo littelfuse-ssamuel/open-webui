@@ -344,6 +344,9 @@
 		// Note: Univer handles focus automatically when users click cells
 		// Do not manually manipulate focus/tabindex as it interferes with Univer's internal editor system
 
+		// Note: Univer handles focus automatically when users click cells
+		// Do not manually manipulate focus/tabindex as it interferes with Univer's internal editor system
+
 		// Listen for changes to track unsaved state
 		univerAPI.onCommandExecuted((command: any) => {
 			const editCommands = [

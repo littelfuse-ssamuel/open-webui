@@ -450,6 +450,7 @@
 								{readOnly}
 								{editCodeBlock}
 								{topPadding}
+								on:openExcelArtifact
 							/>
 						{/each}
 					</ul>
