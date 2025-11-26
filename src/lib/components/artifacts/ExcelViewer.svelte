@@ -260,23 +260,8 @@
 		// Get Facade API for easier interaction
 		univerAPI = FUniver.newAPI(univer);
 
-		// Focus container to enable keyboard input - improved approach
-		setTimeout(() => {
-			if (containerElement) {
-				// Make container focusable
-				containerElement.setAttribute('tabindex', '0');
-				
-				// Find and focus the canvas element
-				const canvas = containerElement.querySelector('canvas');
-				if (canvas) {
-					canvas.setAttribute('tabindex', '0');
-					canvas.focus();
-				} else {
-					// Fallback to focusing the container itself
-					containerElement.focus();
-				}
-			}
-		}, 200);
+		// Note: Univer handles focus automatically when users click cells
+		// Do not manually manipulate focus/tabindex as it interferes with Univer's internal editor system
 
 		// Listen for changes to track unsaved state
 		univerAPI.onCommandExecuted((command: any) => {
@@ -340,6 +325,26 @@
 			const workbook = univerAPI.getActiveWorkbook();
 			if (!workbook) {
 				throw new Error('No active workbook');
+			}
+
+			// End any active cell editing to ensure data is synced to snapshot
+			// Per Univer docs: "The cell data is synchronized to the snapshot when the cell editor loses focus"
+			// Reference: https://docs.univer.ai/guides/sheets/features/core/range-selection
+			try {
+				await workbook.endEditingAsync(true);
+			} catch (e) {
+				// endEditingAsync may not be available in older versions, fall back to command
+				console.warn('endEditingAsync not available, trying command fallback');
+				try {
+					univerAPI.executeCommand('sheet.operation.set-cell-edit-visible', {
+						visible: false,
+						_eventType: 2 // DeviceInputEventType.PointerUp
+					});
+					// Small delay to ensure data syncs
+					await new Promise(resolve => setTimeout(resolve, 50));
+				} catch (cmdErr) {
+					console.warn('Could not end editing:', cmdErr);
+				}
 			}
 
 			const snapshot = workbook.save();
