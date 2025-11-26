@@ -15,7 +15,7 @@
 	let saveMessage = '';
 	let hasUnsavedChanges = false;
 	let isFullscreen = false;
-
+	let hasCharts = false;
 	// Univer instances (dynamically loaded)
 	let univer: any = null;
 	let univerAPI: any = null;
@@ -163,11 +163,52 @@
 		}
 	}
 
+	function detectChartsInWorkbook(workbook: any): boolean {
+		try {
+			// Method 1: Check workbook's internal file list if available
+			if (workbook.Directory) {
+				const hasChartFiles = Object.keys(workbook.Directory).some(
+					(key) => key.includes('chart') || key.includes('drawing')
+				);
+				if (hasChartFiles) return true;
+			}
+
+			// Method 2: Check for chart-related properties in sheets
+			for (const sheetName of workbook.SheetNames) {
+				const sheet = workbook.Sheets[sheetName];
+				// Check for drawings reference
+				if (sheet['!drawings'] || sheet['!charts']) {
+					return true;
+				}
+				// Check for legacy chart indicators
+				if (sheet['!objects'] && Array.isArray(sheet['!objects'])) {
+					const hasChart = sheet['!objects'].some((obj: any) => 
+						obj?.Type === 'Chart' || obj?.type === 'chart'
+					);
+					if (hasChart) return true;
+				}
+			}
+
+			// Method 3: Check workbook metadata
+			if (workbook.Workbook?.Sheets) {
+				const hasChartSheet = workbook.Workbook.Sheets.some(
+					(s: any) => s?.Chart || s?.Drawing
+				);
+				if (hasChartSheet) return true;
+			}
+
+			return false;
+		} catch (e) {
+			console.warn('Error detecting charts:', e);
+			return false;
+		}
+	}
+
 	// Convert XLSX ArrayBuffer to Univer workbook data format using xlsx library
 	async function convertXLSXToUniverData(arrayBuffer: ArrayBuffer) {
 		const XLSX = await import('xlsx');
 		const workbook = XLSX.read(arrayBuffer, { type: 'array', cellFormula: true, cellStyles: true });
-
+		hasCharts = detectChartsInWorkbook(workbook);
 		// Build Univer-compatible workbook data
 		const sheets: Record<string, any> = {};
 		let sheetOrder: string[] = [];
@@ -716,6 +757,18 @@
 			</div>
 		{/if}
 
+		<!-- Chart notice banner -->
+		{#if hasCharts && !loading && !error}
+			<div class="excel-chart-notice">
+				<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<line x1="18" y1="20" x2="18" y2="10"/>
+					<line x1="12" y1="20" x2="12" y2="4"/>
+					<line x1="6" y1="20" x2="6" y2="14"/>
+				</svg>
+				<span>This file contains charts. Charts are preserved in the downloaded file but cannot be displayed in the web viewer.</span>
+			</div>
+		{/if}
+
 		<!-- Main content area -->
 		{#if loading}
 			<div class="excel-loading">
@@ -983,5 +1036,31 @@
 	/* Animate spin for save button */
 	.animate-spin {
 		animation: spin 1s linear infinite;
+	}
+
+	.excel-chart-notice {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 12px;
+		background: #eff6ff;
+		color: #1e40af;
+		font-size: 13px;
+		border-bottom: 1px solid #bfdbfe;
+	}
+
+	.excel-chart-notice svg {
+		flex-shrink: 0;
+		color: #3b82f6;
+	}
+
+	:global(.dark) .excel-chart-notice {
+		background: #1e3a5f;
+		color: #93c5fd;
+		border-bottom-color: #1e40af;
+	}
+
+	:global(.dark) .excel-chart-notice svg {
+		color: #60a5fa;
 	}
 </style>
