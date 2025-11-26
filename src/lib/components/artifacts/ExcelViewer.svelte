@@ -251,24 +251,32 @@
 				enabled: true
 			}
 		});
-		univer.registerPlugin(UniverSheetsUIPlugin);
+		// Note: UniverSheetsUIPlugin was registered twice - removing duplicate
 		univer.registerPlugin(UniverSheetsFormulaPlugin);
 
 		// Create workbook with data
 		univer.createUnit(UniverInstanceType.UNIVER_SHEET, data);
 
-		// Focus container to enable keyboard input
-		setTimeout(() => {
-			if (containerElement) {
-				const canvas = containerElement.querySelector('canvas');
-				if (canvas) {
-					canvas.focus();
-				}
-			}
-		}, 100);
-
 		// Get Facade API for easier interaction
 		univerAPI = FUniver.newAPI(univer);
+
+		// Focus container to enable keyboard input - improved approach
+		setTimeout(() => {
+			if (containerElement) {
+				// Make container focusable
+				containerElement.setAttribute('tabindex', '0');
+				
+				// Find and focus the canvas element
+				const canvas = containerElement.querySelector('canvas');
+				if (canvas) {
+					canvas.setAttribute('tabindex', '0');
+					canvas.focus();
+				} else {
+					// Fallback to focusing the container itself
+					containerElement.focus();
+				}
+			}
+		}, 200);
 
 		// Listen for changes to track unsaved state
 		univerAPI.onCommandExecuted((command: any) => {
@@ -338,11 +346,19 @@
 
 			// Convert Univer data back to cell changes for the backend API
 			const changes: Array<{ row: number; col: number; value: any; isFormula: boolean }> = [];
+			
+			// Get active sheet ID and extract sheet name from snapshot
 			const activeSheet = workbook.getActiveSheet();
-			const sheetName = activeSheet?.getName() || '';
+			const activeSheetId = activeSheet?.getSheetId();
+			const sheetName = activeSheetId && snapshot.sheets?.[activeSheetId]?.name 
+				? snapshot.sheets[activeSheetId].name 
+				: Object.values(snapshot.sheets || {})[0]?.name || 'Sheet1';
 
-			// Get all cell data from the snapshot
-			const sheetData = Object.values(snapshot.sheets || {})[0] as any;
+			// Get all cell data from the snapshot (use active sheet if available, otherwise first sheet)
+			const sheetData = activeSheetId && snapshot.sheets?.[activeSheetId] 
+				? snapshot.sheets[activeSheetId] 
+				: Object.values(snapshot.sheets || {})[0] as any;
+				
 			if (sheetData?.cellData) {
 				Object.entries(sheetData.cellData).forEach(([rowStr, rowData]: [string, any]) => {
 					const row = parseInt(rowStr) + 1; // Convert to 1-indexed
