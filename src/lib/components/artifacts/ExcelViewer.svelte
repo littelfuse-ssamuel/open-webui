@@ -28,6 +28,7 @@
 	async function loadUniverModules() {
 		try {
 			const [
+				// Core modules
 				{ Univer, LocaleType, UniverInstanceType },
 				{ defaultTheme },
 				{ UniverRenderEnginePlugin },
@@ -38,8 +39,19 @@
 				{ UniverSheetsPlugin },
 				{ UniverSheetsUIPlugin },
 				{ UniverSheetsFormulaPlugin },
-				{ FUniver }
+				// FIX #1: Formula UI plugin for editable formula bar
+				{ UniverSheetsFormulaUIPlugin },
+				{ FUniver },
+				// FIX #3: Drawing plugins for floating images and charts foundation
+				{ UniverDrawingPlugin },
+				{ UniverDrawingUIPlugin },
+				{ UniverSheetsDrawingPlugin },
+				{ UniverSheetsDrawingUIPlugin },
+				// FIX #3: Chart plugins (pro - free for up to 4 charts)
+				{ UniverSheetsChartPlugin },
+				{ UniverSheetsChartUIPlugin }
 			] = await Promise.all([
+				// Core modules
 				import('@univerjs/core'),
 				import('@univerjs/design'),
 				import('@univerjs/engine-render'),
@@ -50,7 +62,17 @@
 				import('@univerjs/sheets'),
 				import('@univerjs/sheets-ui'),
 				import('@univerjs/sheets-formula'),
-				import('@univerjs/facade')
+				// FIX #1: Formula UI plugin
+				import('@univerjs/sheets-formula-ui'),
+				import('@univerjs/facade'),
+				// FIX #3: Drawing plugins
+				import('@univerjs/drawing'),
+				import('@univerjs/drawing-ui'),
+				import('@univerjs/sheets-drawing'),
+				import('@univerjs/sheets-drawing-ui'),
+				// FIX #3: Chart plugins
+				import('@univerjs-pro/sheets-chart'),
+				import('@univerjs-pro/sheets-chart-ui')
 			]);
 
 			// Import styles
@@ -58,7 +80,13 @@
 				import('@univerjs/design/lib/index.css'),
 				import('@univerjs/ui/lib/index.css'),
 				import('@univerjs/docs-ui/lib/index.css'),
-				import('@univerjs/sheets-ui/lib/index.css')
+				import('@univerjs/sheets-ui/lib/index.css'),
+				// FIX #1: Formula UI styles
+				import('@univerjs/sheets-formula-ui/lib/index.css'),
+				// FIX #3: Drawing and chart styles
+				import('@univerjs/drawing-ui/lib/index.css'),
+				import('@univerjs/sheets-drawing-ui/lib/index.css'),
+				import('@univerjs-pro/sheets-chart-ui/lib/index.css')
 			]);
 
 			// Import locale
@@ -67,13 +95,27 @@
 				{ default: UIEnUS },
 				{ default: DocsUIEnUS },
 				{ default: SheetsEnUS },
-				{ default: SheetsUIEnUS }
+				{ default: SheetsUIEnUS },
+				// FIX #1: Formula UI locale
+				{ default: SheetsFormulaUIEnUS },
+				// FIX #3: Drawing and chart locales
+				{ default: DrawingUIEnUS },
+				{ default: SheetsDrawingUIEnUS },
+				{ default: SheetsChartEnUS },
+				{ default: SheetsChartUIEnUS }
 			] = await Promise.all([
 				import('@univerjs/design/locale/en-US'),
 				import('@univerjs/ui/locale/en-US'),
 				import('@univerjs/docs-ui/locale/en-US'),
 				import('@univerjs/sheets/locale/en-US'),
-				import('@univerjs/sheets-ui/locale/en-US')
+				import('@univerjs/sheets-ui/locale/en-US'),
+				// FIX #1: Formula UI locale
+				import('@univerjs/sheets-formula-ui/locale/en-US'),
+				// FIX #3: Drawing and chart locales
+				import('@univerjs/drawing-ui/locale/en-US'),
+				import('@univerjs/sheets-drawing-ui/locale/en-US'),
+				import('@univerjs-pro/sheets-chart/locale/en-US'),
+				import('@univerjs-pro/sheets-chart-ui/locale/en-US')
 			]);
 
 			return {
@@ -89,13 +131,30 @@
 				UniverSheetsPlugin,
 				UniverSheetsUIPlugin,
 				UniverSheetsFormulaPlugin,
+				// FIX #1: Formula UI plugin
+				UniverSheetsFormulaUIPlugin,
 				FUniver,
+				// FIX #3: Drawing plugins
+				UniverDrawingPlugin,
+				UniverDrawingUIPlugin,
+				UniverSheetsDrawingPlugin,
+				UniverSheetsDrawingUIPlugin,
+				// FIX #3: Chart plugins
+				UniverSheetsChartPlugin,
+				UniverSheetsChartUIPlugin,
 				locales: {
 					...DesignEnUS,
 					...UIEnUS,
 					...DocsUIEnUS,
 					...SheetsEnUS,
-					...SheetsUIEnUS
+					...SheetsUIEnUS,
+					// FIX #1: Formula UI locale
+					...SheetsFormulaUIEnUS,
+					// FIX #3: Drawing and chart locales
+					...DrawingUIEnUS,
+					...SheetsDrawingUIEnUS,
+					...SheetsChartEnUS,
+					...SheetsChartUIEnUS
 				}
 			};
 		} catch (e) {
@@ -221,7 +280,17 @@
 			UniverSheetsPlugin,
 			UniverSheetsUIPlugin,
 			UniverSheetsFormulaPlugin,
+			// FIX #1: Formula UI plugin
+			UniverSheetsFormulaUIPlugin,
 			FUniver,
+			// FIX #3: Drawing plugins
+			UniverDrawingPlugin,
+			UniverDrawingUIPlugin,
+			UniverSheetsDrawingPlugin,
+			UniverSheetsDrawingUIPlugin,
+			// FIX #3: Chart plugins
+			UniverSheetsChartPlugin,
+			UniverSheetsChartUIPlugin,
 			locales
 		} = modules;
 
@@ -239,19 +308,41 @@
 		univer.registerPlugin(UniverFormulaEnginePlugin);
 		univer.registerPlugin(UniverUIPlugin, {
 			container: containerElement,
-			footer: false
+			// FIX #2: Enable footer to show sheet tabs for switching between sheets
+			footer: true
 		});
 		univer.registerPlugin(UniverDocsPlugin);
 		univer.registerPlugin(UniverDocsUIPlugin);
-		univer.registerPlugin(UniverSheetsPlugin);
-		univer.registerPlugin(UniverSheetsUIPlugin);
+		univer.registerPlugin(UniverSheetsPlugin, {
+			notExecuteFormula: false
+		});
+		univer.registerPlugin(UniverSheetsUIPlugin, {
+			clipboardConfig: {
+				enabled: true
+			}
+		});
 		univer.registerPlugin(UniverSheetsFormulaPlugin);
+		// FIX #1: Register Formula UI plugin for editable formula bar
+		univer.registerPlugin(UniverSheetsFormulaUIPlugin);
+
+		// FIX #3: Register Drawing plugins (required for charts and floating images)
+		univer.registerPlugin(UniverDrawingPlugin);
+		univer.registerPlugin(UniverDrawingUIPlugin);
+		univer.registerPlugin(UniverSheetsDrawingPlugin);
+		univer.registerPlugin(UniverSheetsDrawingUIPlugin);
+
+		// FIX #3: Register Chart plugins (pro - free for up to 4 charts without license)
+		univer.registerPlugin(UniverSheetsChartPlugin);
+		univer.registerPlugin(UniverSheetsChartUIPlugin);
 
 		// Create workbook with data
 		univer.createUnit(UniverInstanceType.UNIVER_SHEET, data);
 
 		// Get Facade API for easier interaction
 		univerAPI = FUniver.newAPI(univer);
+
+		// Note: Univer handles focus automatically when users click cells
+		// Do not manually manipulate focus/tabindex as it interferes with Univer's internal editor system
 
 		// Listen for changes to track unsaved state
 		univerAPI.onCommandExecuted((command: any) => {
@@ -271,7 +362,7 @@
 		});
 
 		univerLoaded = true;
-		console.log('Univer initialized successfully');
+		console.log('Univer initialized successfully with formula bar, sheet tabs, and chart support');
 	}
 
 	// Load workbook from URL
@@ -282,7 +373,10 @@
 			loading = true;
 			error = null;
 
-			const resp = await fetch(file.url);
+			// FIX #4: Add cache-busting to ensure we get the latest version
+			const cacheBustUrl = file.url + (file.url.includes('?') ? '&' : '?') + '_t=' + Date.now();
+			
+			const resp = await fetch(cacheBustUrl);
 			if (!resp.ok) {
 				throw new Error(`Failed to fetch file: ${resp.statusText}`);
 			}
@@ -300,7 +394,7 @@
 		}
 	}
 
-	// Save changes back to server
+	// FIX #4: Save changes back to server - now saves ALL sheets
 	async function saveChanges() {
 		if (!univerAPI || !file.fileId) {
 			saveMessage = 'No changes to save';
@@ -317,52 +411,86 @@
 				throw new Error('No active workbook');
 			}
 
+			// End any active cell editing to ensure data is synced to snapshot
+			try {
+				await workbook.endEditingAsync(true);
+			} catch (e) {
+				// endEditingAsync may not be available in older versions, fall back to command
+				console.warn('endEditingAsync not available, trying command fallback');
+				try {
+					univerAPI.executeCommand('sheet.operation.set-cell-edit-visible', {
+						visible: false,
+						_eventType: 2 // DeviceInputEventType.PointerUp
+					});
+					// Small delay to ensure data syncs
+					await new Promise(resolve => setTimeout(resolve, 50));
+				} catch (cmdErr) {
+					console.warn('Could not end editing:', cmdErr);
+				}
+			}
+
 			const snapshot = workbook.save();
 
-			// Convert Univer data back to cell changes for the backend API
-			const changes: Array<{ row: number; col: number; value: any; isFormula: boolean }> = [];
-			const activeSheet = workbook.getActiveSheet();
-			const sheetName = activeSheet?.getName() || '';
+			// FIX #4: Iterate through ALL sheets and save changes for each
+			const sheetsToSave = Object.values(snapshot.sheets || {}) as any[];
+			let totalChangesApplied = 0;
+			const errors: string[] = [];
 
-			// Get all cell data from the snapshot
-			const sheetData = Object.values(snapshot.sheets || {})[0] as any;
-			if (sheetData?.cellData) {
-				Object.entries(sheetData.cellData).forEach(([rowStr, rowData]: [string, any]) => {
-					const row = parseInt(rowStr) + 1; // Convert to 1-indexed
-					Object.entries(rowData).forEach(([colStr, cellData]: [string, any]) => {
-						const col = parseInt(colStr) + 1; // Convert to 1-indexed
-						const hasFormula = !!cellData.f;
-						const value = hasFormula ? `=${cellData.f}` : cellData.v;
+			for (const sheetData of sheetsToSave) {
+				const sheetName = sheetData.name || 'Sheet1';
+				const changes: Array<{ row: number; col: number; value: any; isFormula: boolean }> = [];
 
-						changes.push({
-							row,
-							col,
-							value,
-							isFormula: hasFormula
+				if (sheetData?.cellData) {
+					Object.entries(sheetData.cellData).forEach(([rowStr, rowData]: [string, any]) => {
+						const row = parseInt(rowStr) + 1; // Convert to 1-indexed
+						Object.entries(rowData).forEach(([colStr, cellData]: [string, any]) => {
+							const col = parseInt(colStr) + 1; // Convert to 1-indexed
+							const hasFormula = !!cellData.f;
+							const value = hasFormula ? `=${cellData.f}` : cellData.v;
+
+							changes.push({
+								row,
+								col,
+								value,
+								isFormula: hasFormula
+							});
 						});
 					});
-				});
+				}
+
+				// Only send if there are changes for this sheet
+				if (changes.length > 0) {
+					try {
+						const response = await fetch('/api/v1/excel/update', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({
+								fileId: file.fileId,
+								sheet: sheetName,
+								changes
+							})
+						});
+
+						if (!response.ok) {
+							const errorData = await response.json();
+							errors.push(`Sheet "${sheetName}": ${errorData.detail || 'Failed to save'}`);
+						} else {
+							const result = await response.json();
+							totalChangesApplied += changes.length;
+							console.log(`Saved ${changes.length} cells to sheet "${sheetName}"`);
+						}
+					} catch (e) {
+						errors.push(`Sheet "${sheetName}": ${e instanceof Error ? e.message : 'Network error'}`);
+					}
+				}
 			}
 
-			// Send to backend
-			const response = await fetch('/api/v1/excel/update', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					fileId: file.fileId,
-					sheet: sheetName,
-					changes
-				})
-			});
-
-			if (!response.ok) {
-				const errorData = await response.json();
-				throw new Error(errorData.detail || 'Failed to save changes');
+			if (errors.length > 0) {
+				throw new Error(errors.join('; '));
 			}
 
-			const result = await response.json();
 			hasUnsavedChanges = false;
-			saveMessage = result.message || 'Changes saved successfully';
+			saveMessage = `Successfully saved ${totalChangesApplied} cells across ${sheetsToSave.length} sheet(s)`;
 			saving = false;
 
 			// Auto-dismiss success message
@@ -371,6 +499,7 @@
 					saveMessage = '';
 				}
 			}, 3000);
+
 		} catch (e) {
 			console.error('Error saving changes:', e);
 			saveMessage = e instanceof Error ? e.message : 'Failed to save changes';
