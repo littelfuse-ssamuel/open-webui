@@ -21,6 +21,7 @@
 	import ArrowLeft from '../icons/ArrowLeft.svelte';
 	import Download from '../icons/Download.svelte';
 	import ExcelViewer from '../artifacts/ExcelViewer.svelte';
+	import PresentationViewer from '../artifacts/PresentationViewer.svelte';
 	import fileSaver from 'file-saver';
 
 	const { saveAs } = fileSaver;
@@ -79,6 +80,15 @@
 			const excelContainer = document.querySelector('.excel-viewer-wrapper');
 			if (excelContainer?.requestFullscreen) {
 				excelContainer.requestFullscreen();
+			}
+			return;
+		}
+
+		// For Presentation, fullscreen is handled by the PresentationViewer component
+		if (content?.type === 'presentation') {
+			const presentationContainer = document.querySelector('.presentation-viewer-wrapper');
+			if (presentationContainer?.requestFullscreen) {
+				presentationContainer.requestFullscreen();
 			}
 			return;
 		}
@@ -229,7 +239,7 @@
 							</button>
 						</Tooltip>
 
-						{#if contents[selectedContentIdx].type === 'iframe' || contents[selectedContentIdx].type === 'excel'}
+						{#if contents[selectedContentIdx].type === 'iframe' || contents[selectedContentIdx].type === 'excel' || contents[selectedContentIdx].type === 'presentation'}
 							<Tooltip content={$i18n.t('Open in full screen')}>
 								<button
 									class=" bg-none border-none text-xs bg-gray-50 hover:bg-gray-100 dark:bg-gray-850 dark:hover:bg-gray-800 transition rounded-md p-0.5"
@@ -283,6 +293,8 @@
 							/>
 						{:else if contents[selectedContentIdx].type === 'excel'}
 							<ExcelViewer file={contents[selectedContentIdx]} />
+						{:else if contents[selectedContentIdx].type === 'presentation'}
+							<PresentationViewer content={contents[selectedContentIdx].content} />
 						{/if}
 					</div>
 				{:else}

@@ -26,8 +26,14 @@ export type ExcelArtifact = {
 	};
 };
 
+// Presentation artifact types for Reveal.js presentations
+export type PresentationArtifact = {
+	type: 'presentation';
+	content: string;
+};
+
 export type FileArtifact = {
-	type: 'image' | 'audio' | 'file' | 'excel';
+	type: 'image' | 'audio' | 'file' | 'excel' | 'presentation';
 	url: string;
 	name?: string;
 	fileId?: string;

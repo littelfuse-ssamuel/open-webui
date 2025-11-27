@@ -876,29 +876,36 @@
 
 				if (htmlContent || cssContent || jsContent) {
 					const renderedContent = `
-                        <!DOCTYPE html>
-                        <html lang="en">
-                        <head>
-                            <meta charset="UTF-8">
-                            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-							<${''}style>
-								body {
-									background-color: white; /* Ensure the iframe has a white background */
-								}
+										<!DOCTYPE html>
+										<html lang="en">
+										<head>
+											<meta charset="UTF-8">
+											<meta name="viewport" content="width=device-width, initial-scale=1.0">
+											<${''}style>
+												body {
+													background-color: white; /* Ensure the iframe has a white background */
+												}
 
-								${cssContent}
-							</${''}style>
-                        </head>
-                        <body>
-                            ${htmlContent}
+												${cssContent}
+											</${''}style>
+										</head>
+										<body>
+											${htmlContent}
 
-							<${''}script>
-                            	${jsContent}
-							</${''}script>
-                        </body>
-                        </html>
-                    `;
-					contents = [...contents, { type: 'iframe', content: renderedContent }];
+											<${''}script>
+												${jsContent}
+											</${''}script>
+										</body>
+										</html>
+									`;
+					
+					// Detect Reveal.js presentations
+					const isPresentation = htmlContent.includes('class="reveal"') || 
+										htmlContent.includes("class='reveal'") ||
+										htmlContent.includes('class="reveal ');
+					
+					const artifactType = isPresentation ? 'presentation' : 'iframe';
+					contents = [...contents, { type: artifactType, content: renderedContent }];
 				} else {
 					// Check for SVG content
 					for (const block of codeBlocks) {
