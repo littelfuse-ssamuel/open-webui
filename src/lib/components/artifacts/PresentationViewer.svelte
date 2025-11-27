@@ -33,7 +33,7 @@
 					<script src="https://unpkg.com/reveal.js@5.1.0/dist/reveal.js"><\/script>
 					<script>
 						Reveal.initialize({
-							hash: true,
+							hash: false,
 							controls: true,
 							progress: true,
 							center: true,
@@ -71,7 +71,7 @@
 	<script src="https://unpkg.com/reveal.js@5.1.0/dist/reveal.js"><\/script>
 	<script>
 		Reveal.initialize({
-			hash: true,
+			hash: false,
 			controls: true,
 			progress: true,
 			center: true,
