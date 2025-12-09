@@ -246,6 +246,45 @@
 				}
 			}
 
+			// Convert column widths from SheetJS to Univer format
+			const columnData: Record<number, any> = {};
+			if (ws['!cols']) {
+				ws['!cols'].forEach((col: any, idx: number) => {
+					if (col) {
+						columnData[idx] = {
+							w: col.wpx || (col.wch ? Math.round(col.wch * 7.5) : undefined),
+							hd: col.hidden ? 1 : 0
+						};
+					}
+				});
+			}
+
+			// Convert row heights from SheetJS to Univer format
+			const rowData: Record<number, any> = {};
+			if (ws['!rows']) {
+				ws['!rows'].forEach((row: any, idx: number) => {
+					if (row) {
+						rowData[idx] = {
+							h: row.hpx || row.hpt || undefined,
+							hd: row.hidden ? 1 : 0
+						};
+					}
+				});
+			}
+
+			// Convert merged cells from SheetJS to Univer format
+			const mergeData: any[] = [];
+			if (ws['!merges']) {
+				ws['!merges'].forEach((merge: any) => {
+					mergeData.push({
+						startRow: merge.s.r,
+						startColumn: merge.s.c,
+						endRow: merge.e.r,
+						endColumn: merge.e.c
+					});
+				});
+			}
+
 			const sheetId = `sheet_${sheetIndex}`;
 			sheetOrder.push(sheetId);
 
@@ -255,8 +294,9 @@
 				rowCount: Math.max(range.e.r + 1, 100),
 				columnCount: Math.max(range.e.c + 1, 26),
 				cellData,
-				rowData: {},
-				columnData: {},
+				rowData,
+				columnData,
+				mergeData,
 				defaultRowHeight: 24,
 				defaultColumnWidth: 88
 			};
@@ -283,6 +323,7 @@
 			if (xlsxStyle.font.underline) style.ul = { s: 1 };
 			if (xlsxStyle.font.sz) style.fs = xlsxStyle.font.sz;
 			if (xlsxStyle.font.color?.rgb) style.cl = { rgb: xlsxStyle.font.color.rgb };
+			if (xlsxStyle.font.name) style.ff = xlsxStyle.font.name; // Font family
 		}
 
 		if (xlsxStyle.fill?.fgColor?.rgb) {
@@ -298,6 +339,28 @@
 				const vMap: Record<string, number> = { top: 1, center: 2, bottom: 3 };
 				style.vt = vMap[xlsxStyle.alignment.vertical] || 2;
 			}
+			if (xlsxStyle.alignment.wrapText) {
+				style.tb = 1; // Text wrap
+			}
+		}
+
+		// Border handling
+		if (xlsxStyle.border) {
+			style.bd = {};
+			const mapBorderStyle = (styleName: string): number => {
+				const styleMap: Record<string, number> = {
+					thin: 1, medium: 2, thick: 3, dashed: 4, dotted: 5, double: 6
+				};
+				return styleMap[styleName] || 1;
+			};
+			const mapBorder = (b: any) => {
+				if (!b) return undefined;
+				return { s: mapBorderStyle(b.style || 'thin'), cl: { rgb: b.color?.rgb || '000000' } };
+			};
+			if (xlsxStyle.border.top) style.bd.t = mapBorder(xlsxStyle.border.top);
+			if (xlsxStyle.border.right) style.bd.r = mapBorder(xlsxStyle.border.right);
+			if (xlsxStyle.border.bottom) style.bd.b = mapBorder(xlsxStyle.border.bottom);
+			if (xlsxStyle.border.left) style.bd.l = mapBorder(xlsxStyle.border.left);
 		}
 
 		return style;
