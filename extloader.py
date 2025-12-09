@@ -324,33 +324,135 @@ def process_docx(file_bytes: bytes, filename: str) -> tuple[str, int]:
         raise HTTPException(status_code=500, detail=f"Failed to process DOCX: {e}")
 
 def process_xlsx(file_bytes: bytes, filename: str) -> tuple[str, int]:
-    """Process XLSX files using openpyxl."""
+    """
+    Process XLSX/XLSM files using openpyxl with enhanced extraction for LLM context.
+    
+    Extracts:
+    - Cell values with row indices for precise referencing
+    - Formulas explicitly marked (not just computed values)
+    - Metadata about sheet features (conditional formatting, named ranges, data validation)
+    - Structural hints to help LLM understand the document
+    """
     if not OPENPYXL_AVAILABLE:
         raise HTTPException(status_code=500, detail="openpyxl not available")
     
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
+        # Preserve original extension for .xlsm (macro-enabled) files
+        file_ext = os.path.splitext(filename)[1].lower() or '.xlsx'
+        if file_ext not in ['.xlsx', '.xlsm', '.xls']:
+            file_ext = '.xlsx'
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
             temp_file.write(file_bytes)
             temp_file_path = temp_file.name
         
-        workbook = openpyxl.load_workbook(temp_file_path, read_only=True)
+        # Load with data_only=False to capture formulas
+        workbook = openpyxl.load_workbook(temp_file_path, read_only=False, data_only=False)
+        
         full_text = ""
         sheet_count = 0
         
+        # Document-level metadata
+        doc_metadata = []
+        
+        # Check for named ranges at workbook level
+        try:
+            named_ranges = list(workbook.defined_names.definedName)
+            if named_ranges:
+                range_names = [nr.name for nr in named_ranges[:10]]  # Limit to 10
+                doc_metadata.append(f"Named Ranges: {', '.join(range_names)}")
+                if len(named_ranges) > 10:
+                    doc_metadata.append(f"  ... and {len(named_ranges) - 10} more")
+        except Exception:
+            pass
+        
+        if doc_metadata:
+            full_text += "=== Document Metadata ===\n"
+            full_text += "\n".join(doc_metadata) + "\n"
+        
+        # Process each sheet
         for sheet_name in workbook.sheetnames:
             sheet = workbook[sheet_name]
             sheet_count += 1
+            
+            # Sheet header with metadata
             full_text += f"\n=== Sheet: {sheet_name} ===\n"
             
-            for row in sheet.iter_rows(values_only=True):
-                row_text = []
+            # Sheet-level metadata
+            sheet_meta = []
+            
+            # Check for conditional formatting
+            try:
+                cf_count = len(sheet.conditional_formatting._cf_rules) if hasattr(sheet, 'conditional_formatting') else 0
+                if cf_count > 0:
+                    sheet_meta.append(f"Conditional Formatting: {cf_count} rule(s)")
+            except Exception:
+                pass
+            
+            # Check for data validations
+            try:
+                if hasattr(sheet, 'data_validations') and sheet.data_validations.dataValidation:
+                    dv_count = len(sheet.data_validations.dataValidation)
+                    if dv_count > 0:
+                        sheet_meta.append(f"Data Validations: {dv_count} rule(s)")
+            except Exception:
+                pass
+            
+            # Check for merged cells
+            try:
+                if sheet.merged_cells.ranges:
+                    merge_count = len(sheet.merged_cells.ranges)
+                    sheet_meta.append(f"Merged Cells: {merge_count} region(s)")
+            except Exception:
+                pass
+            
+            # Get dimensions
+            try:
+                if sheet.dimensions and sheet.dimensions != 'A1:A1':
+                    sheet_meta.append(f"Range: {sheet.dimensions}")
+            except Exception:
+                pass
+            
+            if sheet_meta:
+                full_text += "[Metadata: " + " | ".join(sheet_meta) + "]\n"
+            
+            full_text += "\n"
+            
+            # Extract cell data with row indices and formula markers
+            row_num = 0
+            for row in sheet.iter_rows():
+                row_num += 1
+                row_values = []
+                has_content = False
+                
                 for cell in row:
-                    if cell is not None:
-                        # Normalize cell text
-                        cell_str = normalize_text_encoding(str(cell))
-                        row_text.append(cell_str)
-                if row_text:
-                    full_text += "\t".join(row_text) + "\n"
+                    if cell.value is not None:
+                        has_content = True
+                        cell_str = ""
+                        
+                        # Check if cell contains a formula
+                        if isinstance(cell.value, str) and cell.value.startswith('='):
+                            # It's a formula - include it with marker
+                            formula = normalize_text_encoding(cell.value)
+                            cell_str = f"{formula} (formula)"
+                        else:
+                            # Regular value
+                            cell_str = normalize_text_encoding(str(cell.value))
+                        
+                        row_values.append(cell_str)
+                    else:
+                        row_values.append("")
+                
+                if has_content:
+                    # Include row index for precise cell referencing
+                    # Strip trailing empty cells
+                    while row_values and row_values[-1] == "":
+                        row_values.pop()
+                    
+                    if row_values:
+                        full_text += f"[R{row_num}] " + "\t".join(row_values) + "\n"
+            
+            full_text += "\n"
         
         workbook.close()
         os.unlink(temp_file_path)
