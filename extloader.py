@@ -75,6 +75,10 @@ ENABLE_HEADER_FOOTER_DETECTION = os.getenv("ENABLE_HEADER_FOOTER_DETECTION", "tr
 HEADER_MARGIN_RATIO = float(os.getenv("HEADER_MARGIN_RATIO", "0.08"))  # Top 8% of page
 FOOTER_MARGIN_RATIO = float(os.getenv("FOOTER_MARGIN_RATIO", "0.08"))  # Bottom 8% of page
 
+# Debug output settings
+EXTLOADER_DEBUG_OUTPUT = os.getenv("EXTLOADER_DEBUG_OUTPUT", "false").lower() == "true"
+EXTLOADER_DEBUG_PATH = os.getenv("EXTLOADER_DEBUG_PATH", "/app/backend/data/extloader_debug")
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -212,6 +216,47 @@ def normalize_text_encoding(text: str) -> str:
             return text.replace('\u00a0', ' ').replace('\xa0', ' ')
         except:
             return text
+
+# =============================================================================
+# DEBUG OUTPUT
+# =============================================================================
+
+def write_debug_output(filename: str, page_content: str, full_result: dict) -> None:
+    """
+    Write extraction output to debug files for inspection.
+    Only runs if EXTLOADER_DEBUG_OUTPUT is enabled.
+    """
+    if not EXTLOADER_DEBUG_OUTPUT:
+        return
+    
+    try:
+        # Ensure debug directory exists
+        os.makedirs(EXTLOADER_DEBUG_PATH, exist_ok=True)
+        
+        # Create unique filename prefix using timestamp and source filename hash
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename_hash = hashlib.md5(filename.encode()).hexdigest()[:8]
+        safe_filename = re.sub(r'[^\w\-.]', '_', filename)[:50]
+        prefix = f"{timestamp}_{safe_filename}_{filename_hash}"
+        
+        # Write markdown content
+        md_path = os.path.join(EXTLOADER_DEBUG_PATH, f"{prefix}_content.md")
+        with open(md_path, 'w', encoding='utf-8') as f:
+            f.write(f"# Extraction Debug Output\n")
+            f.write(f"**Source:** {filename}\n")
+            f.write(f"**Timestamp:** {datetime.now().isoformat()}\n\n")
+            f.write("---\n\n")
+            f.write(page_content)
+        
+        # Write full JSON result
+        json_path = os.path.join(EXTLOADER_DEBUG_PATH, f"{prefix}_full.json")
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(full_result, f, indent=2, ensure_ascii=False, default=str)
+        
+        logger.info(f"Debug output written: {md_path}, {json_path}")
+        
+    except Exception as e:
+        logger.warning(f"Failed to write debug output: {e}")
 
 # =============================================================================
 # METADATA EXTRACTION
@@ -804,6 +849,9 @@ def process_pdf_enhanced(
     
     doc.close()
     
+    # Write debug output if enabled
+    write_debug_output(filename, result["page_content"], result)
+    
     logger.info(f"Enhanced PDF processing complete: {len(all_page_texts)} pages, {len(all_tables)} tables, {len(result['images'])} images")
     
     return result
@@ -1297,6 +1345,9 @@ async def process_document(request: Request):
                 "images": [],
                 "tables": [],
             }
+            
+            # Write debug output if enabled
+            write_debug_output(filename, response_payload["page_content"], response_payload)
             
             return JSONResponse(content=response_payload)
             
