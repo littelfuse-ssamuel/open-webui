@@ -752,7 +752,23 @@ def process_pdf_enhanced(
             exclude_headers_footers, 
             table_bboxes=table_bboxes
         )
+
+        # 4. Re-inject tables as clean Markdown (ensures anchor verification works)
+        if page_tables:
+            table_sections = []
+            num_tables = len(page_tables)
+            for idx, t in enumerate(page_tables, start=1):
+                if t.markdown:
+                    if num_tables > 1:
+                        table_sections.append(f"[Table {idx} of {num_tables}]\n{t.markdown}")
+                    else:
+                        table_sections.append(t.markdown)
+            
+            if table_sections:
+                table_block = "\n\n--- TABLES ---\n\n" + "\n\n".join(table_sections)
+                page_text = (page_text.strip() + table_block) if page_text.strip() else table_block.strip()
         
+        # 5. Collect non-empty pages (check AFTER table injection)
         if page_text.strip():
             all_page_texts.append(page_text.strip())
     
