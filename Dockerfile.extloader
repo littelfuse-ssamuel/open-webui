@@ -10,9 +10,11 @@ RUN apt-get update && apt-get install -y \
 COPY requirements-extloader.txt .
 
 # 1. Install CPU-only PyTorch first to save massive space (avoids pulling 2GB+ CUDA libs)
+# We do this here just to ensure the environment is clean, though the wheel step below uses --no-deps
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
-# 2. Build wheels for other dependencies (ignoring the torch we just installed)
+# 2. Build wheels for listed dependencies
+# We use --no-deps to prevent it from downloading the GPU version of Torch automatically
 RUN pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements-extloader.txt
 
 # Runtime stage
@@ -35,6 +37,7 @@ COPY --from=builder /app/wheels /wheels
 COPY requirements-extloader.txt .
 
 # Re-install CPU PyTorch in runtime (lightweight) and then the rest from wheels
+# Pip will resolve missing transitive dependencies (like numpy, pydantic) from PyPI here
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache /wheels/*
 
