@@ -9,12 +9,28 @@ import json
 import re
 import unicodedata
 from typing import Dict, List, Tuple, Any, Optional
+from io import BytesIO
+from pathlib import Path
+
 from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.responses import JSONResponse
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
-# Fast native document processors
+# =============================================================================
+# DOCLING IMPORTS (The new brain)
+# =============================================================================
+try:
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+    from docling.datamodel.base_models import InputFormat, DocumentStream
+    from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
+    DOCLING_AVAILABLE = True
+except ImportError:
+    DOCLING_AVAILABLE = False
+
+# =============================================================================
+# LEGACY / FAST PROCESSOR IMPORTS
+# =============================================================================
 try:
     from docx import Document as DocxDocument
     DOCX_AVAILABLE = True
@@ -47,33 +63,18 @@ try:
 except ImportError:
     PILLOW_AVAILABLE = False
 
-# Optional: pymupdf4llm for enhanced markdown extraction
-try:
-    import pymupdf4llm
-    PYMUPDF4LLM_AVAILABLE = True
-except ImportError:
-    PYMUPDF4LLM_AVAILABLE = False
-
 # Azure Document Intelligence compatible output formats
 AZURE_DOC_INTEL_COMPATIBLE = True
 DEFAULT_OUTPUT_FORMAT = "json"  # or "markdown"
 
-# Image processing efficiency settings
+# Image processing settings
 AUTO_COMPRESS_IMAGES = os.getenv("AUTO_COMPRESS_IMAGES", "true").lower() == "true"
 DEFAULT_COMPRESSION_WIDTH = int(os.getenv("FILE_IMAGE_COMPRESSION_WIDTH", "1024"))
 DEFAULT_COMPRESSION_HEIGHT = int(os.getenv("FILE_IMAGE_COMPRESSION_HEIGHT", "1024"))
 COMPRESSION_QUALITY = int(os.getenv("IMAGE_COMPRESSION_QUALITY", "85"))
-
-# Image filtering thresholds
 MIN_IMAGE_WIDTH = int(os.getenv("MIN_IMAGE_WIDTH", "32"))
 MIN_IMAGE_HEIGHT = int(os.getenv("MIN_IMAGE_HEIGHT", "32"))
 MIN_IMAGE_SIZE_BYTES = int(os.getenv("MIN_IMAGE_SIZE_BYTES", "1024"))
-
-# Layout detection settings
-ENABLE_MULTI_COLUMN_DETECTION = os.getenv("ENABLE_MULTI_COLUMN_DETECTION", "true").lower() == "true"
-ENABLE_HEADER_FOOTER_DETECTION = os.getenv("ENABLE_HEADER_FOOTER_DETECTION", "true").lower() == "true"
-HEADER_MARGIN_RATIO = float(os.getenv("HEADER_MARGIN_RATIO", "0.08"))  # Top 8% of page
-FOOTER_MARGIN_RATIO = float(os.getenv("FOOTER_MARGIN_RATIO", "0.08"))  # Bottom 8% of page
 
 # Debug output settings
 EXTLOADER_DEBUG_OUTPUT = os.getenv("EXTLOADER_DEBUG_OUTPUT", "false").lower() == "true"
@@ -85,18 +86,44 @@ logger = logging.getLogger(__name__)
 
 # Initialize the FastAPI application
 app = FastAPI(
-    title="Enhanced Content Processing Engine",
-    description="An API to extract text, tables, layout, and metadata from documents for OpenWebUI.",
-    version="2.1.0"
+    title="Enhanced Content Processing Engine (Docling)",
+    description="An API to extract text, tables, layout, and metadata using Docling & PyMuPDF.",
+    version="3.0.0"
 )
 
 # =============================================================================
-# DATA CLASSES FOR STRUCTURED OUTPUT
+# GLOBAL DOCLING CONVERTER (Singleton)
+# =============================================================================
+# We initialize this ONCE to avoid reloading PyTorch models on every request.
+docling_converter = None
+
+def get_docling_converter():
+    global docling_converter
+    if not DOCLING_AVAILABLE:
+        return None
+        
+    if docling_converter is None:
+        logger.info("Initializing Docling DocumentConverter (this may take a moment)...")
+        # Configure pipeline: Enable table structure recognition
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.do_table_structure = True
+        pipeline_options.do_ocr = False  # Keep false for speed unless needed
+        
+        docling_converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+            }
+        )
+        logger.info("Docling DocumentConverter initialized successfully.")
+    return docling_converter
+
+# =============================================================================
+# DATA CLASSES
 # =============================================================================
 
 @dataclass
 class DocumentMetadata:
-    """Document-level metadata extracted from PDF."""
+    """Document-level metadata."""
     title: Optional[str] = None
     author: Optional[str] = None
     subject: Optional[str] = None
@@ -146,17 +173,13 @@ class ExtractedTable:
             "header_external": self.header_external
         }
 
-@dataclass
-class PageRegion:
-    """A detected region on a page (header, footer, column, etc.)."""
-    region_type: str  # "header", "footer", "column", "body"
-    bbox: Tuple[float, float, float, float]
-    content: str = ""
-    page_number: int = 0
-
 @dataclass 
 class LayoutInfo:
-    """Layout information for a page."""
+    """
+    Layout information.
+    Note: With Docling, explicit column detection is abstracted, 
+    so we populate this with basic page dims for compatibility.
+    """
     page_number: int
     width: float
     height: float
@@ -165,155 +188,71 @@ class LayoutInfo:
     has_footer: bool = False
     header_content: str = ""
     footer_content: str = ""
-    columns: List[Tuple[float, float, float, float]] = None  # List of column bboxes
+    columns: List[Tuple[float, float, float, float]] = None 
     
     def __post_init__(self):
         if self.columns is None:
             self.columns = []
 
 # =============================================================================
-# TEXT NORMALIZATION & CLEANING
+# TEXT UTILS
 # =============================================================================
 
 def normalize_text_encoding(text: str) -> str:
-    """
-    Normalize text encoding to handle unicode issues comprehensively.
-    """
+    """Normalize text encoding to handle unicode issues."""
     if not text:
         return ""
-    
     try:
         normalized = unicodedata.normalize('NFKC', text)
-        
         replacements = {
-            '\u00a0': ' ',
-            '\xa0': ' ',
-            '\u2013': '-',
-            '\u2014': '--',
-            '\u2018': "'",
-            '\u2019': "'",
-            '\u201c': '"',
-            '\u201d': '"',
-            '\u2022': '*',
-            '\u2026': '...',
+            '\u00a0': ' ', '\xa0': ' ', '\u2013': '-', '\u2014': '--',
+            '\u2018': "'", '\u2019': "'", '\u201c': '"', '\u201d': '"',
+            '\u2022': '*', '\u2026': '...',
         }
-        
         for unicode_char, replacement in replacements.items():
             normalized = normalized.replace(unicode_char, replacement)
-        
-        # Strip control characters except newline and tab
-        normalized = ''.join(
-            char for char in normalized 
-            if char == '\n' or char == '\t' or not unicodedata.category(char).startswith('C')
-        )
-        
-        normalized = normalized.encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
-        
-        return normalized
-        
-    except Exception as e:
-        logger.warning(f"Text normalization failed, returning original text: {e}")
-        try:
-            return text.replace('\u00a0', ' ').replace('\xa0', ' ')
-        except:
-            return text
-
-def clean_cell_content(text: str) -> str:
-    """
-    Aggressively cleans table cell content to ensure valid Markdown and remove PDF artifacts.
-    Handles broken newlines, isolated dots, and mashed text.
-    """
-    if not text:
-        return ""
-    
-    # 1. Basic normalization
-    text = normalize_text_encoding(text)
-    
-    # 2. Critical: Replace newlines with spaces. 
-    # Markdown tables break immediately if a cell contains a newline.
-    text = text.replace('\n', ' ').replace('\r', '')
-    
-    # 3. Remove common PDF table artifacts (isolated dots, dashes, underscores)
-    # Often occurring in empty cells, phantom column separators, or OCR noise (e.g., ". .")
-    if re.match(r'^[\s\.\-\_]+$', text):
-        return ""
-        
-    # 4. Fix mashed words (e.g., "word1.word2" -> "word1. word2")
-    # Adds a space after a period if followed immediately by a capital letter.
-    # This helps with sentences that lose spacing during PDF extraction.
-    text = re.sub(r'\.([A-Z])', r'. \1', text)
-    
-    # 5. Collapse multiple spaces into one and strip edges
-    text = re.sub(r'\s+', ' ', text).strip()
-    
-    return text
-
-# =============================================================================
-# DEBUG OUTPUT
-# =============================================================================
+        return normalized.encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+    except Exception:
+        return text
 
 def write_debug_output(filename: str, page_content: str, full_result: dict) -> None:
-    """
-    Write extraction output to debug files for inspection.
-    Only runs if EXTLOADER_DEBUG_OUTPUT is enabled.
-    """
     if not EXTLOADER_DEBUG_OUTPUT:
         return
-    
     try:
-        # Ensure debug directory exists
         os.makedirs(EXTLOADER_DEBUG_PATH, exist_ok=True)
-        
-        # Create unique filename prefix using timestamp and source filename hash
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename_hash = hashlib.md5(filename.encode()).hexdigest()[:8]
         safe_filename = re.sub(r'[^\w\-.]', '_', filename)[:50]
-        prefix = f"{timestamp}_{safe_filename}_{filename_hash}"
+        prefix = f"{timestamp}_{safe_filename}"
         
-        # Write markdown content
-        md_path = os.path.join(EXTLOADER_DEBUG_PATH, f"{prefix}_content.md")
-        with open(md_path, 'w', encoding='utf-8') as f:
-            f.write(f"# Extraction Debug Output\n")
-            f.write(f"**Source:** {filename}\n")
-            f.write(f"**Timestamp:** {datetime.now().isoformat()}\n\n")
-            f.write("---\n\n")
+        with open(os.path.join(EXTLOADER_DEBUG_PATH, f"{prefix}_content.md"), 'w', encoding='utf-8') as f:
             f.write(page_content)
         
-        # Write full JSON result
-        json_path = os.path.join(EXTLOADER_DEBUG_PATH, f"{prefix}_full.json")
-        with open(json_path, 'w', encoding='utf-8') as f:
+        with open(os.path.join(EXTLOADER_DEBUG_PATH, f"{prefix}_full.json"), 'w', encoding='utf-8') as f:
             json.dump(full_result, f, indent=2, ensure_ascii=False, default=str)
-        
-        logger.info(f"Debug output written: {md_path}, {json_path}")
-        
+            
+        logger.info(f"Debug output written to {EXTLOADER_DEBUG_PATH}")
     except Exception as e:
         logger.warning(f"Failed to write debug output: {e}")
 
 # =============================================================================
-# METADATA EXTRACTION
+# METADATA & UTILS (PyMuPDF)
 # =============================================================================
 
 def extract_pdf_metadata(doc: fitz.Document) -> DocumentMetadata:
-    """
-    Extract comprehensive metadata from a PDF document.
-    """
+    """Extract standard metadata using PyMuPDF (Fast)."""
     metadata = DocumentMetadata()
-    
     try:
-        # Get standard metadata dictionary
         pdf_metadata = doc.metadata
-        
         if pdf_metadata:
-            metadata.title = pdf_metadata.get('title') or None
-            metadata.author = pdf_metadata.get('author') or None
-            metadata.subject = pdf_metadata.get('subject') or None
-            metadata.keywords = pdf_metadata.get('keywords') or None
-            metadata.creator = pdf_metadata.get('creator') or None
-            metadata.producer = pdf_metadata.get('producer') or None
-            metadata.format = pdf_metadata.get('format') or None
-            metadata.encryption = pdf_metadata.get('encryption') or None
+            metadata.title = pdf_metadata.get('title')
+            metadata.author = pdf_metadata.get('author')
+            metadata.subject = pdf_metadata.get('subject')
+            metadata.keywords = pdf_metadata.get('keywords')
+            metadata.creator = pdf_metadata.get('creator')
+            metadata.producer = pdf_metadata.get('producer')
+            metadata.format = pdf_metadata.get('format')
+            metadata.encryption = pdf_metadata.get('encryption')
             
-            # Parse creation and modification dates
             creation_date = pdf_metadata.get('creationDate')
             if creation_date:
                 metadata.creation_date = parse_pdf_date(creation_date)
@@ -323,48 +262,26 @@ def extract_pdf_metadata(doc: fitz.Document) -> DocumentMetadata:
                 metadata.modification_date = parse_pdf_date(mod_date)
         
         metadata.page_count = doc.page_count
-        
-        logger.info(f"Extracted metadata: title='{metadata.title}', author='{metadata.author}', pages={metadata.page_count}")
-        
     except Exception as e:
         logger.warning(f"Error extracting metadata: {e}")
         metadata.page_count = doc.page_count if doc else 0
-    
     return metadata
 
 def parse_pdf_date(date_string: str) -> Optional[str]:
-    """
-    Parse PDF date format (D:YYYYMMDDHHmmSSOHH'mm') to ISO format.
-    """
-    if not date_string:
-        return None
-    
+    if not date_string: return None
     try:
-        # Remove the "D:" prefix if present
-        if date_string.startswith("D:"):
-            date_string = date_string[2:]
-        
-        # Try to parse the core date/time part (YYYYMMDDHHmmSS)
-        # Handle various lengths of date strings
+        if date_string.startswith("D:"): date_string = date_string[2:]
         year = date_string[0:4] if len(date_string) >= 4 else None
         month = date_string[4:6] if len(date_string) >= 6 else "01"
         day = date_string[6:8] if len(date_string) >= 8 else "01"
         hour = date_string[8:10] if len(date_string) >= 10 else "00"
         minute = date_string[10:12] if len(date_string) >= 12 else "00"
         second = date_string[12:14] if len(date_string) >= 14 else "00"
-        
-        if year:
-            return f"{year}-{month}-{day}T{hour}:{minute}:{second}"
-        
-    except Exception as e:
-        logger.debug(f"Could not parse PDF date '{date_string}': {e}")
-    
-    return date_string  # Return original if parsing fails
+        if year: return f"{year}-{month}-{day}T{hour}:{minute}:{second}"
+    except Exception: pass
+    return date_string
 
 def get_table_of_contents(doc: fitz.Document) -> List[Dict]:
-    """
-    Extract the table of contents (bookmarks/outlines) from a PDF.
-    """
     toc = []
     try:
         raw_toc = doc.get_toc()
@@ -375,366 +292,11 @@ def get_table_of_contents(doc: fitz.Document) -> List[Dict]:
                     "title": normalize_text_encoding(entry[1]),
                     "page": entry[2]
                 })
-        logger.info(f"Extracted {len(toc)} TOC entries")
-    except Exception as e:
-        logger.warning(f"Error extracting TOC: {e}")
-    
+    except Exception: pass
     return toc
 
 # =============================================================================
-# TABLE EXTRACTION
-# =============================================================================
-
-def extract_tables_from_page(page: fitz.Page, page_num: int) -> List[ExtractedTable]:
-    """
-    Extract tables from a PDF page using PyMuPDF's find_tables() method.
-    Includes cell cleaning to remove artifacts and fix newlines.
-    """
-    extracted_tables = []
-    
-    try:
-        # Use PyMuPDF's table finder (available since v1.23.0)
-        tables = page.find_tables()
-        
-        for table_idx, table in enumerate(tables.tables):
-            try:
-                # Get table data
-                table_data = table.extract()
-                
-                if not table_data or len(table_data) == 0:
-                    continue
-                
-                # Determine dimensions
-                row_count = len(table_data)
-                col_count = max(len(row) for row in table_data) if table_data else 0
-                
-                # Build cells list
-                cells = []
-                for row_idx, row in enumerate(table_data):
-                    for col_idx, cell_content in enumerate(row):
-                        if cell_content is not None:
-                            # Apply robust cleaning to the raw cell text
-                            cell_text = clean_cell_content(str(cell_content))
-                            cells.append(TableCell(
-                                row_index=row_idx,
-                                col_index=col_idx,
-                                content=cell_text,
-                                is_header=(row_idx == 0)  # First row as header by default
-                            ))
-                
-                # Generate markdown representation using the cleaned data logic
-                markdown = table_to_markdown(table_data)
-                
-                # Get bounding box
-                bbox = table.bbox if hasattr(table, 'bbox') else (0, 0, 0, 0)
-                
-                # Check if header is external
-                header_external = False
-                if hasattr(table, 'header') and table.header:
-                    header_external = getattr(table.header, 'external', False)
-                
-                extracted_table = ExtractedTable(
-                    page_number=page_num,
-                    table_index=table_idx,
-                    row_count=row_count,
-                    col_count=col_count,
-                    cells=cells,
-                    bbox=bbox,
-                    markdown=markdown,
-                    header_external=header_external
-                )
-                
-                extracted_tables.append(extracted_table)
-                logger.debug(f"Extracted table {table_idx} from page {page_num}: {row_count}x{col_count}")
-                
-            except Exception as e:
-                logger.warning(f"Error extracting table {table_idx} from page {page_num}: {e}")
-                continue
-        
-        logger.info(f"Extracted {len(extracted_tables)} tables from page {page_num}")
-        
-    except Exception as e:
-        logger.warning(f"Error in table extraction for page {page_num}: {e}")
-    
-    return extracted_tables
-
-def table_to_markdown(table_data: List[List]) -> str:
-    """
-    Convert table data to markdown format with strict single-line rows and cleanup.
-    """
-    if not table_data or len(table_data) == 0:
-        return ""
-    
-    # Normalize all cells to strings and clean them
-    normalized = []
-    max_cols = 0
-    
-    for row in table_data:
-        normalized_row = []
-        for cell in row:
-            # Use the robust cleaner
-            cell_str = clean_cell_content(str(cell)) if cell is not None else ""
-            
-            # Escape pipe characters as they define columns in markdown
-            cell_str = cell_str.replace("|", "\\|")
-            
-            normalized_row.append(cell_str)
-        
-        normalized.append(normalized_row)
-        max_cols = max(max_cols, len(normalized_row))
-    
-    # Ensure all rows have same number of columns (pad with empty strings)
-    for row in normalized:
-        while len(row) < max_cols:
-            row.append("")
-    
-    # Build markdown
-    lines = []
-    
-    if normalized:
-        # Header row
-        lines.append("| " + " | ".join(normalized[0]) + " |")
-        
-        # Separator row
-        lines.append("|" + "|".join(["---"] * max_cols) + "|")
-        
-        # Data rows
-        for row in normalized[1:]:
-            lines.append("| " + " | ".join(row) + " |")
-    
-    return "\n".join(lines)
-
-# =============================================================================
-# LAYOUT DETECTION (Multi-column, Headers, Footers)
-# =============================================================================
-
-def detect_page_layout(page: fitz.Page, page_num: int) -> LayoutInfo:
-    """
-    Detect page layout including columns, headers, and footers.
-    """
-    rect = page.rect
-    width = rect.width
-    height = rect.height
-    
-    layout = LayoutInfo(
-        page_number=page_num,
-        width=width,
-        height=height
-    )
-    
-    if not ENABLE_HEADER_FOOTER_DETECTION and not ENABLE_MULTI_COLUMN_DETECTION:
-        return layout
-    
-    try:
-        # Get text blocks with position information
-        blocks = page.get_text("dict", sort=True)["blocks"]
-        text_blocks = [b for b in blocks if b.get("type") == 0]  # Type 0 = text blocks
-        
-        if not text_blocks:
-            return layout
-        
-        # Calculate header/footer boundaries
-        header_boundary = height * HEADER_MARGIN_RATIO
-        footer_boundary = height * (1 - FOOTER_MARGIN_RATIO)
-        
-        # Detect headers and footers
-        if ENABLE_HEADER_FOOTER_DETECTION:
-            header_blocks = []
-            footer_blocks = []
-            body_blocks = []
-            
-            for block in text_blocks:
-                bbox = block.get("bbox", (0, 0, 0, 0))
-                block_top = bbox[1]
-                block_bottom = bbox[3]
-                
-                if block_bottom < header_boundary:
-                    header_blocks.append(block)
-                elif block_top > footer_boundary:
-                    footer_blocks.append(block)
-                else:
-                    body_blocks.append(block)
-            
-            if header_blocks:
-                layout.has_header = True
-                layout.header_content = extract_text_from_blocks(header_blocks)
-            
-            if footer_blocks:
-                layout.has_footer = True
-                layout.footer_content = extract_text_from_blocks(footer_blocks)
-        
-        # Detect columns
-        if ENABLE_MULTI_COLUMN_DETECTION:
-            columns = detect_columns(page, text_blocks)
-            layout.column_count = len(columns) if columns else 1
-            layout.columns = columns
-        
-    except Exception as e:
-        logger.warning(f"Error detecting layout for page {page_num}: {e}")
-    
-    return layout
-
-def detect_columns(page: fitz.Page, text_blocks: List[Dict]) -> List[Tuple[float, float, float, float]]:
-    """
-    Detect text columns on a page by analyzing text block positions.
-    """
-    if not text_blocks:
-        return []
-    
-    rect = page.rect
-    page_width = rect.width
-    page_height = rect.height
-    
-    # Filter to body area (exclude likely headers/footers)
-    header_boundary = page_height * HEADER_MARGIN_RATIO
-    footer_boundary = page_height * (1 - FOOTER_MARGIN_RATIO)
-    
-    body_blocks = []
-    for block in text_blocks:
-        bbox = block.get("bbox", (0, 0, 0, 0))
-        block_center_y = (bbox[1] + bbox[3]) / 2
-        if header_boundary < block_center_y < footer_boundary:
-            body_blocks.append(block)
-    
-    if not body_blocks:
-        return [(0, 0, page_width, page_height)]
-    
-    # Collect all x-coordinates of block edges
-    # Find gaps in x-coordinates that could be column separators
-    # A gap is significant if it's wider than 5% of page width
-    min_gap = page_width * 0.05
-    
-    # Track coverage intervals
-    intervals = []
-    for block in body_blocks:
-        bbox = block.get("bbox", (0, 0, 0, 0))
-        intervals.append((bbox[0], bbox[2]))
-    
-    # Merge overlapping intervals
-    intervals.sort()
-    merged = []
-    for start, end in intervals:
-        if merged and start <= merged[-1][1] + min_gap:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-        else:
-            merged.append((start, end))
-    
-    # Each merged interval represents a column
-    columns = []
-    for x0, x1 in merged:
-        # Find y extent for this column
-        col_blocks = [b for b in body_blocks 
-                      if b["bbox"][0] >= x0 - min_gap and b["bbox"][2] <= x1 + min_gap]
-        if col_blocks:
-            y0 = min(b["bbox"][1] for b in col_blocks)
-            y1 = max(b["bbox"][3] for b in col_blocks)
-            columns.append((x0, y0, x1, y1))
-    
-    # If we only detected one column spanning most of the page, treat as single column
-    if len(columns) == 1:
-        col = columns[0]
-        if (col[2] - col[0]) > page_width * 0.7:
-            return [(0, 0, page_width, page_height)]
-    
-    return columns if columns else [(0, 0, page_width, page_height)]
-
-def extract_text_from_blocks(blocks: List[Dict]) -> str:
-    """
-    Extract and concatenate text from a list of text blocks.
-    """
-    text_parts = []
-    
-    for block in blocks:
-        if block.get("type") != 0:  # Skip non-text blocks
-            continue
-        
-        for line in block.get("lines", []):
-            line_text = ""
-            for span in line.get("spans", []):
-                span_text = span.get("text", "")
-                line_text += span_text
-            if line_text.strip():
-                text_parts.append(normalize_text_encoding(line_text.strip()))
-    
-    return " | ".join(text_parts)
-
-def is_block_in_table(block_bbox: Tuple[float, float, float, float], table_bboxes: List[Tuple[float, float, float, float]]) -> bool:
-    """
-    Check if a text block is located inside any detected table.
-    """
-    if not table_bboxes:
-        return False
-        
-    bx0, by0, bx1, by1 = block_bbox
-    block_area = (bx1 - bx0) * (by1 - by0)
-    
-    if block_area <= 0:
-        return False
-    
-    block_rect = fitz.Rect(block_bbox)
-    
-    for table_bbox in table_bboxes:
-        table_rect = fitz.Rect(table_bbox)
-        # Calculate intersection
-        intersect = block_rect & table_rect # Intersection rectangle
-        
-        if intersect.is_valid and not intersect.is_empty:
-            intersect_area = intersect.get_area()
-            # If >50% of the text block is inside the table, consider it part of the table
-            if intersect_area / block_area > 0.5:
-                return True
-                
-    return False
-
-def extract_text_with_layout(page: fitz.Page, layout: LayoutInfo, exclude_headers_footers: bool = False, table_bboxes: List[Tuple] = None) -> str:
-    """
-    Extract text from a page respecting layout and excluding specific regions (tables, headers, footers).
-    """
-    table_bboxes = table_bboxes or []
-    
-    # Get all text blocks. sort=True organizes them in reading order (top-left to bottom-right),
-    # effectively handling standard multi-column layouts automatically.
-    blocks = page.get_text("blocks", sort=True)
-    
-    cleaned_text_parts = []
-    
-    for block in blocks:
-        # block format: (x0, y0, x1, y1, "text", block_no, block_type)
-        if block[6] != 0: # Skip non-text blocks (images, graphics)
-            continue
-            
-        bbox = block[:4]
-        text = block[4]
-        
-        if not text.strip():
-            continue
-            
-        # 1. Check Table Exclusion (Critical to prevent data duplication)
-        if is_block_in_table(bbox, table_bboxes):
-            continue
-            
-        # 2. Check Header/Footer Exclusion
-        if exclude_headers_footers:
-            y_center = (bbox[1] + bbox[3]) / 2
-            
-            # Filter Header
-            if layout.has_header and y_center < (layout.height * HEADER_MARGIN_RATIO):
-                continue
-                
-            # Filter Footer
-            if layout.has_footer and y_center > (layout.height * (1 - FOOTER_MARGIN_RATIO)):
-                continue
-
-        # 3. Add Valid Text
-        # Normalize encoding to fix common PDF font issues
-        normalized_text = normalize_text_encoding(text.strip())
-        if normalized_text:
-            cleaned_text_parts.append(normalized_text)
-            
-    return "\n\n".join(cleaned_text_parts)
-
-# =============================================================================
-# ENHANCED PDF PROCESSING
+# HYBRID PDF PROCESSING
 # =============================================================================
 
 def process_pdf_enhanced(
@@ -748,11 +310,9 @@ def process_pdf_enhanced(
     output_format: str = "json"
 ) -> Dict[str, Any]:
     """
-    Enhanced PDF processing with tables, layout detection, and metadata.
+    Enhanced PDF processing using Docling for content/layout and PyMuPDF for assets/metadata.
     """
     start_time = time.time()
-    
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
     
     result = {
         "page_content": "",
@@ -760,125 +320,158 @@ def process_pdf_enhanced(
         "tables": [],
         "metadata": {
             "source": filename,
-            "page_count": doc.page_count,
-            "processing_status": "completed"
+            "processing_status": "pending",
+            "engine": "docling_hybrid"
         },
         "images": [],
         "document_metadata": {},
         "table_of_contents": [],
         "layout_info": []
     }
-    
-    # Extract document metadata
-    if extract_metadata:
-        doc_metadata = extract_pdf_metadata(doc)
-        result["document_metadata"] = doc_metadata.to_dict()
-        result["table_of_contents"] = get_table_of_contents(doc)
-    
-    # Process each page
-    all_page_texts = []
-    all_tables = []
-    all_layouts = []
-    
-    for page_num in range(len(doc)):
-        page = doc.load_page(page_num)
-        page_idx = page_num + 1  # 1-indexed
-        
-        # 1. Detect layout
-        layout = None
-        if detect_layout:
-            layout = detect_page_layout(page, page_idx)
-            all_layouts.append({
-                "page_number": page_idx,
-                "width": layout.width,
-                "height": layout.height,
-                "column_count": layout.column_count,
-                "has_header": layout.has_header,
-                "has_footer": layout.has_footer,
-                "header_content": layout.header_content if layout.has_header else None,
-                "footer_content": layout.footer_content if layout.has_footer else None
-            })
-        else:
-            # Create a dummy layout object for passing to extractor
-            layout = LayoutInfo(page_idx, page.rect.width, page.rect.height)
-        
-        # 2. Extract tables FIRST (to get bboxes)
-        page_tables = []
-        table_bboxes = []
-        if extract_tables:
-            page_tables = extract_tables_from_page(page, page_idx)
-            for table in page_tables:
-                all_tables.append(table.to_dict())
-                table_bboxes.append(table.bbox) # Collect bboxes for masking
-        
-        # 3. Extract text (passing layout and table bboxes for exclusion)
-        page_text = extract_text_with_layout(
-            page, 
-            layout, 
-            exclude_headers_footers, 
-            table_bboxes=table_bboxes
+
+    # -------------------------------------------------------------------------
+    # PHASE 1: PyMuPDF (Fast Pass)
+    # Extract Metadata, TOC, and Raw Images
+    # -------------------------------------------------------------------------
+    try:
+        with fitz.open(stream=file_bytes, filetype="pdf") as doc_fitz:
+            if extract_metadata:
+                result["document_metadata"] = extract_pdf_metadata(doc_fitz).to_dict()
+                result["table_of_contents"] = get_table_of_contents(doc_fitz)
+                
+                # Basic layout info to satisfy schema (since Docling abstracts this)
+                for page_num in range(len(doc_fitz)):
+                    page = doc_fitz[page_num]
+                    result["layout_info"].append({
+                        "page_number": page_num + 1,
+                        "width": page.rect.width,
+                        "height": page.rect.height,
+                        "column_count": 1, # Defaulting, as Docling handles reading order
+                        "has_header": False, 
+                        "has_footer": False
+                    })
+
+            if extract_images_flag.lower() == "true":
+                result["images"] = process_images_efficiently(doc_fitz, extract_images_flag, filename)
+    except Exception as e:
+        logger.error(f"PyMuPDF Phase failed: {e}")
+        # We continue, as Docling might still succeed with text
+
+    # -------------------------------------------------------------------------
+    # PHASE 2: Docling (Deep Pass)
+    # Extract Layout-Aware Text, Markdown, and Semantic Tables
+    # -------------------------------------------------------------------------
+    if not DOCLING_AVAILABLE:
+        raise HTTPException(
+            status_code=500, 
+            detail="Docling engine not available. Install 'docling' to use this feature."
         )
 
-        # 4. Re-inject tables as clean Markdown (ensures anchor verification works)
-        if page_tables:
-            table_sections = []
-            num_tables = len(page_tables)
-            for idx, t in enumerate(page_tables, start=1):
-                if t.markdown:
-                    if num_tables > 1:
-                        table_sections.append(f"[Table {idx} of {num_tables}]\n{t.markdown}")
-                    else:
-                        table_sections.append(t.markdown)
-            
-            if table_sections:
-                table_block = "\n\n--- TABLES ---\n\n" + "\n\n".join(table_sections)
-                page_text = (page_text.strip() + table_block) if page_text.strip() else table_block.strip()
+    converter = get_docling_converter()
+    if not converter:
+        raise HTTPException(status_code=500, detail="Failed to initialize Docling converter.")
+
+    try:
+        logger.info(f"Starting Docling conversion for {filename}...")
         
-        # 5. Collect non-empty pages (check AFTER table injection)
-        if page_text.strip():
-            all_page_texts.append(page_text.strip())
-    
-    # Extract images
-    if extract_images_flag.lower() == "true":
-        result["images"] = process_images_efficiently(doc, extract_images_flag, filename)
-    
-    # Build full text with page delimiters
-    full_text_parts = []
-    total_pages = len(all_page_texts)
-    
-    for idx, page_text in enumerate(all_page_texts):
-        page_num = idx + 1
-        if idx > 0:
-            full_text_parts.append(f"\n\nPage {page_num} of {total_pages}\n\n")
-        full_text_parts.append(page_text)
-    
-    result["page_content"] = "".join(full_text_parts)
-    result["pages"] = all_page_texts
-    result["tables"] = all_tables
-    result["layout_info"] = all_layouts
-    
-    # Update metadata
-    result["metadata"]["total_pages"] = doc.page_count
-    result["metadata"]["non_empty_pages"] = len(all_page_texts)
-    result["metadata"]["tables_extracted"] = len(all_tables)
+        # Prepare stream for Docling
+        buf = BytesIO(file_bytes)
+        source = DocumentStream(name=filename, stream=buf)
+        
+        # Run Conversion
+        conv_res = converter.convert(source)
+        doc = conv_res.document
+        
+        # 1. Extract Markdown
+        # Docling automatically handles multi-column reading order and headers/footers
+        full_markdown = doc.export_to_markdown()
+        result["page_content"] = full_markdown
+        
+        # Populate 'pages' list. 
+        # Note: Docling is a continuous document model. We put the full text in 
+        # the first element or splitting by headers if critical. 
+        # For now, we provide the full text to ensure searchability.
+        result["pages"] = [full_markdown] 
+        
+        # 2. Extract Tables
+        if extract_tables:
+            for table_idx, table_element in enumerate(doc.tables):
+                try:
+                    # Export to DataFrame to get grid data
+                    grid = table_element.export_to_dataframe()
+                    
+                    # Determine page number (Docling uses 1-based indexing in provenance)
+                    page_no = 1
+                    if table_element.prov and len(table_element.prov) > 0:
+                        page_no = table_element.prov[0].page_no
+
+                    # Create standard Cells
+                    cells = []
+                    # grid.iterrows() yields (index, Series)
+                    # We need to handle the header row explicitly if it exists in the dataframe
+                    
+                    # Convert dataframe to list of lists including header
+                    headers = grid.columns.tolist()
+                    data_rows = grid.values.tolist()
+                    
+                    # Add Header Row
+                    for col_idx, header_text in enumerate(headers):
+                        cells.append(TableCell(
+                            row_index=0,
+                            col_index=col_idx,
+                            content=str(header_text),
+                            is_header=True
+                        ))
+                    
+                    # Add Data Rows
+                    for r_idx, row in enumerate(data_rows):
+                        for c_idx, cell_val in enumerate(row):
+                            cells.append(TableCell(
+                                row_index=r_idx + 1, # +1 because 0 is header
+                                col_index=c_idx,
+                                content=str(cell_val) if cell_val is not None else "",
+                                is_header=False
+                            ))
+
+                    # Calculate simplified BBox (default to 0 if not available)
+                    bbox = (0, 0, 0, 0)
+                    
+                    # Get Markdown representation
+                    table_md = table_element.export_to_markdown()
+
+                    result["tables"].append(ExtractedTable(
+                        page_number=page_no,
+                        table_index=table_idx,
+                        row_count=len(data_rows) + 1,
+                        col_count=len(headers),
+                        cells=cells,
+                        bbox=bbox,
+                        markdown=table_md,
+                        header_external=False
+                    ).to_dict())
+                except Exception as e:
+                    logger.warning(f"Error converting Docling table {table_idx}: {e}")
+                    continue
+
+    except Exception as e:
+        logger.error(f"Docling conversion failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Docling processing failed: {str(e)}")
+
+    # Finalize Metadata
+    result["metadata"]["total_pages"] = result["document_metadata"].get("page_count", 0)
+    result["metadata"]["tables_extracted"] = len(result["tables"])
     result["metadata"]["images_extracted"] = len(result["images"])
     result["metadata"]["processing_time_ms"] = int((time.time() - start_time) * 1000)
-    result["metadata"]["layout_detection_enabled"] = detect_layout
-    result["metadata"]["multi_column_pages"] = sum(1 for l in all_layouts if l.get("column_count", 1) > 1)
-    result["metadata"]["pages_with_headers"] = sum(1 for l in all_layouts if l.get("has_header", False))
-    result["metadata"]["pages_with_footers"] = sum(1 for l in all_layouts if l.get("has_footer", False))
-    
-    doc.close()
-    
-    # Write debug output if enabled
+    result["metadata"]["processing_status"] = "completed"
+
+    # Write debug output
     write_debug_output(filename, result["page_content"], result)
     
-    logger.info(f"Enhanced PDF processing complete: {len(all_page_texts)} pages, {len(all_tables)} tables, {len(result['images'])} images")
-    
+    logger.info(f"Hybrid processing complete: {len(result['tables'])} tables, {len(result['images'])} images")
     return result
 
 # =============================================================================
-# IMAGE PROCESSING (Unchanged from original)
+# IMAGE PROCESSING (PyMuPDF - Efficient)
 # =============================================================================
 
 def compress_image_for_efficiency(image_bytes: bytes, image_ext: str) -> tuple[bytes, bool, tuple[int, int]]:
@@ -990,7 +583,7 @@ def process_images_efficiently(doc, extract_images_flag: str, filename: str) -> 
     return base64_images
 
 # =============================================================================
-# OFFICE DOCUMENT PROCESSORS (DOCX, XLSX, PPTX - from original)
+# OFFICE DOCUMENT PROCESSORS (DOCX, XLSX, PPTX)
 # =============================================================================
 
 def extract_docx_structure_azure_format(doc, filename: str, output_format: str = "json") -> str:
@@ -1008,16 +601,11 @@ def extract_docx_structure_azure_format(doc, filename: str, output_format: str =
             style_name = paragraph.style.name if paragraph.style else ""
             if "Heading" in style_name:
                 level = 1
-                if "Heading 2" in style_name:
-                    level = 2
-                elif "Heading 3" in style_name:
-                    level = 3
-                elif "Heading 4" in style_name:
-                    level = 4
-                elif "Heading 5" in style_name:
-                    level = 5
-                elif "Heading 6" in style_name:
-                    level = 6
+                if "Heading 2" in style_name: level = 2
+                elif "Heading 3" in style_name: level = 3
+                elif "Heading 4" in style_name: level = 4
+                elif "Heading 5" in style_name: level = 5
+                elif "Heading 6" in style_name: level = 6
                 
                 element_type = "title"
                 role = f"heading{level}"
@@ -1086,7 +674,6 @@ def extract_docx_structure_azure_format(doc, filename: str, output_format: str =
             elif element["kind"] == "paragraph":
                 markdown_content += element["content"] + "\n\n"
             elif element["kind"] == "table":
-                # Convert to markdown table
                 table_rows = []
                 max_cols = element.get("columnCount", 0)
                 
@@ -1106,7 +693,6 @@ def extract_docx_structure_azure_format(doc, filename: str, output_format: str =
                     markdown_content += "\n"
         
         return markdown_content.strip()
-    
     else:
         azure_response = {
             "apiVersion": "2024-11-30",
@@ -1116,14 +702,11 @@ def extract_docx_structure_azure_format(doc, filename: str, output_format: str =
             "paragraphs": [e for e in content_elements if e["kind"] in ["paragraph", "title"]],
             "tables": [e for e in content_elements if e["kind"] == "table"],
         }
-        
         return json.dumps(azure_response, indent=2)
 
 def process_docx(file_bytes: bytes, filename: str) -> tuple[str, int]:
-    """Process DOCX files using python-docx."""
     if not DOCX_AVAILABLE:
         raise HTTPException(status_code=500, detail="python-docx not available")
-    
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as temp_file:
             temp_file.write(file_bytes)
@@ -1131,52 +714,39 @@ def process_docx(file_bytes: bytes, filename: str) -> tuple[str, int]:
         
         doc = DocxDocument(temp_file_path)
         structured_content = extract_docx_structure_azure_format(doc, filename, "json")
-        
         os.unlink(temp_file_path)
-        
         page_count = max(1, len(structured_content) // 3000)
-        
         return structured_content, page_count
-        
     except Exception as e:
         if 'temp_file_path' in locals():
-            try:
-                os.unlink(temp_file_path)
-            except:
-                pass
+            try: os.unlink(temp_file_path)
+            except: pass
         raise HTTPException(status_code=500, detail=f"Failed to process DOCX: {e}")
 
 def process_xlsx(file_bytes: bytes, filename: str) -> tuple[str, int]:
-    """Process XLSX/XLSM files using openpyxl with enhanced extraction."""
     if not OPENPYXL_AVAILABLE:
         raise HTTPException(status_code=500, detail="openpyxl not available")
-    
     try:
         file_ext = os.path.splitext(filename)[1].lower() or '.xlsx'
-        if file_ext not in ['.xlsx', '.xlsm', '.xls']:
-            file_ext = '.xlsx'
+        if file_ext not in ['.xlsx', '.xlsm', '.xls']: file_ext = '.xlsx'
         
         with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
             temp_file.write(file_bytes)
             temp_file_path = temp_file.name
         
         workbook = openpyxl.load_workbook(temp_file_path, read_only=False, data_only=False)
-        
         full_text = ""
         sheet_count = 0
         
         for sheet_name in workbook.sheetnames:
             sheet = workbook[sheet_name]
             sheet_count += 1
-            
             full_text += f"\n=== Sheet: {sheet_name} ===\n\n"
-            
             row_num = 0
             for row in sheet.iter_rows():
                 row_num += 1
                 row_values = []
                 has_content = False
-                
                 for cell in row:
                     if cell.value is not None:
                         has_content = True
@@ -1187,33 +757,23 @@ def process_xlsx(file_bytes: bytes, filename: str) -> tuple[str, int]:
                         row_values.append(cell_str)
                     else:
                         row_values.append("")
-                
                 if has_content:
-                    while row_values and row_values[-1] == "":
-                        row_values.pop()
-                    if row_values:
-                        full_text += f"[R{row_num}] " + "\t".join(row_values) + "\n"
-            
+                    while row_values and row_values[-1] == "": row_values.pop()
+                    if row_values: full_text += f"[R{row_num}] " + "\t".join(row_values) + "\n"
             full_text += "\n"
         
         workbook.close()
         os.unlink(temp_file_path)
-        
         return full_text.strip(), sheet_count
-        
     except Exception as e:
         if 'temp_file_path' in locals():
-            try:
-                os.unlink(temp_file_path)
-            except:
-                pass
+            try: os.unlink(temp_file_path)
+            except: pass
         raise HTTPException(status_code=500, detail=f"Failed to process XLSX: {e}")
 
 def process_pptx(file_bytes: bytes, filename: str) -> tuple[str, int]:
-    """Process PPTX files using python-pptx."""
     if not PPTX_AVAILABLE:
         raise HTTPException(status_code=500, detail="python-pptx not available")
-    
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as temp_file:
             temp_file.write(file_bytes)
@@ -1222,16 +782,13 @@ def process_pptx(file_bytes: bytes, filename: str) -> tuple[str, int]:
         prs = Presentation(temp_file_path)
         full_text = ""
         slide_count = 0
-        
         for slide in prs.slides:
             slide_count += 1
             full_text += f"\n=== Slide {slide_count} ===\n"
-            
             for shape in slide.shapes:
                 if hasattr(shape, "text"):
                     shape_text = normalize_text_encoding(shape.text)
                     full_text += shape_text + "\n"
-                
                 if shape.has_table:
                     table = shape.table
                     for row in table.rows:
@@ -1239,52 +796,33 @@ def process_pptx(file_bytes: bytes, filename: str) -> tuple[str, int]:
                             cell_text = normalize_text_encoding(cell.text)
                             full_text += cell_text + " "
                         full_text += "\n"
-        
         os.unlink(temp_file_path)
-        
         return full_text.strip(), slide_count
-        
     except Exception as e:
         if 'temp_file_path' in locals():
-            try:
-                os.unlink(temp_file_path)
-            except:
-                pass
+            try: os.unlink(temp_file_path)
+            except: pass
         raise HTTPException(status_code=500, detail=f"Failed to process PPTX: {e}")
 
 def process_rtf(file_bytes: bytes, filename: str) -> tuple[str, int]:
-    """Process RTF files using striprtf."""
     if not RTF_AVAILABLE:
         raise HTTPException(status_code=500, detail="striprtf not available")
-    
     try:
         rtf_content = file_bytes.decode('utf-8', errors='ignore')
         plain_text = rtf_to_text(rtf_content)
         plain_text = normalize_text_encoding(plain_text)
         page_count = max(1, len(plain_text) // 3000)
-        
         return plain_text.strip(), page_count
-        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process RTF: {e}")
 
 def process_non_pdf_fast(file_bytes: bytes, filename: str, file_ext: str) -> tuple[str, int]:
-    """Process non-PDF documents using fast native Python processors."""
     logger.info(f"Processing {file_ext} file: {filename}")
-    
-    if file_ext == ".docx":
-        return process_docx(file_bytes, filename)
-    elif file_ext in [".xlsx", ".xlsm"]:
-        return process_xlsx(file_bytes, filename)
-    elif file_ext == ".pptx":
-        return process_pptx(file_bytes, filename)
-    elif file_ext == ".rtf":
-        return process_rtf(file_bytes, filename)
-    else:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Unsupported file type: {file_ext}"
-        )
+    if file_ext == ".docx": return process_docx(file_bytes, filename)
+    elif file_ext in [".xlsx", ".xlsm"]: return process_xlsx(file_bytes, filename)
+    elif file_ext == ".pptx": return process_pptx(file_bytes, filename)
+    elif file_ext == ".rtf": return process_rtf(file_bytes, filename)
+    else: raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_ext}")
 
 # =============================================================================
 # API ENDPOINTS
@@ -1293,16 +831,7 @@ def process_non_pdf_fast(file_bytes: bytes, filename: str, file_ext: str) -> tup
 @app.put("/process")
 async def process_document(request: Request):
     """
-    Processes an uploaded document to extract text, tables, layout, and images.
-    
-    Headers:
-        X-Filename: Original filename
-        X-Extract-Images: "true" to extract images
-        X-Extract-Tables: "true" (default) to extract tables
-        X-Detect-Layout: "true" (default) to detect multi-column layouts
-        X-Extract-Metadata: "true" (default) to extract document metadata
-        X-Exclude-Headers-Footers: "true" to exclude headers/footers from text
-        outputContentFormat: "json" (default) or "markdown"
+    Processes an uploaded document.
     """
     start_time = time.time()
     
@@ -1313,7 +842,7 @@ async def process_document(request: Request):
     filename = request.headers.get("x-filename", "unknown_file")
     file_ext = os.path.splitext(filename)[1].lower()
     
-    # Extract processing options from headers
+    # Extract headers
     extract_images_flag = request.headers.get("x-extract-images", "false").lower()
     extract_tables = request.headers.get("x-extract-tables", "true").lower() == "true"
     detect_layout = request.headers.get("x-detect-layout", "true").lower() == "true"
@@ -1321,9 +850,8 @@ async def process_document(request: Request):
     exclude_headers_footers = request.headers.get("x-exclude-headers-footers", "false").lower() == "true"
     output_format = request.headers.get("outputContentFormat", DEFAULT_OUTPUT_FORMAT).lower()
     
-    logger.info(f"Processing: {filename}, ext={file_ext}, tables={extract_tables}, layout={detect_layout}")
+    logger.info(f"Processing: {filename}, ext={file_ext}")
 
-    # PDF processing with enhanced features
     if file_ext == ".pdf":
         result = process_pdf_enhanced(
             file_bytes=file_bytes,
@@ -1335,17 +863,14 @@ async def process_document(request: Request):
             exclude_headers_footers=exclude_headers_footers,
             output_format=output_format
         )
-        
         return JSONResponse(content=result)
     
-    # Non-PDF processing
     else:
         try:
             if file_ext == ".docx" and DOCX_AVAILABLE:
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as temp_file:
                     temp_file.write(file_bytes)
                     temp_file_path = temp_file.name
-                
                 doc = DocxDocument(temp_file_path)
                 full_text = extract_docx_structure_azure_format(doc, filename, output_format)
                 page_count = max(1, len(full_text) // 3000)
@@ -1367,9 +892,7 @@ async def process_document(request: Request):
                 "tables": [],
             }
             
-            # Write debug output if enabled
             write_debug_output(filename, response_payload["page_content"], response_payload)
-            
             return JSONResponse(content=response_payload)
             
         except HTTPException:
@@ -1380,94 +903,36 @@ async def process_document(request: Request):
 
 @app.get("/")
 def read_root():
-    """Root endpoint with API information."""
     return {
         "status": "ok",
-        "message": "Enhanced Content Processing Engine is running.",
-        "version": "2.1.0",
-        "features": {
-            "pdf_processing": "PyMuPDF with enhanced extraction",
-            "table_extraction": "Structured tables with markdown output",
-            "layout_detection": "Multi-column and header/footer detection",
-            "metadata_extraction": "Full document metadata and TOC",
-            "image_processing": "Filtered and deduplicated with compression",
+        "message": "Enhanced Content Processing Engine (Docling Edition)",
+        "version": "3.0.0",
+        "engines": {
+            "layout_and_text": "Docling (Microsoft Phi/ResNet)",
+            "images_and_metadata": "PyMuPDF"
         },
-        "supported_formats": ["PDF", "DOCX", "XLSX", "PPTX", "RTF"],
         "processors_available": {
+            "docling": DOCLING_AVAILABLE,
             "docx": DOCX_AVAILABLE,
             "xlsx": OPENPYXL_AVAILABLE,
             "pptx": PPTX_AVAILABLE,
             "rtf": RTF_AVAILABLE,
-            "pymupdf4llm": PYMUPDF4LLM_AVAILABLE,
-        },
-        "settings": {
-            "multi_column_detection": ENABLE_MULTI_COLUMN_DETECTION,
-            "header_footer_detection": ENABLE_HEADER_FOOTER_DETECTION,
-            "image_compression": AUTO_COMPRESS_IMAGES,
         }
     }
 
 @app.get("/health")
 def health_check():
-    """Health check endpoint."""
     return {
         "status": "healthy",
-        "version": "2.1.0",
+        "docling_loaded": docling_converter is not None,
         "processors": {
-            "pdf": "PyMuPDF - Available (Enhanced)",
-            "docx": f"python-docx - {'Available' if DOCX_AVAILABLE else 'Not Available'}",
-            "xlsx": f"openpyxl - {'Available' if OPENPYXL_AVAILABLE else 'Not Available'}",
-            "pptx": f"python-pptx - {'Available' if PPTX_AVAILABLE else 'Not Available'}",
-            "rtf": f"striprtf - {'Available' if RTF_AVAILABLE else 'Not Available'}",
-            "pymupdf4llm": f"{'Available' if PYMUPDF4LLM_AVAILABLE else 'Not Available'}",
-        },
-        "features": {
-            "table_extraction": True,
-            "layout_detection": ENABLE_MULTI_COLUMN_DETECTION,
-            "header_footer_detection": ENABLE_HEADER_FOOTER_DETECTION,
-            "image_compression": AUTO_COMPRESS_IMAGES,
-        }
-    }
-
-@app.get("/capabilities")
-def get_capabilities():
-    """Return detailed capability information."""
-    return {
-        "pdf_features": {
-            "text_extraction": "Page-by-page with unicode normalization",
-            "table_extraction": "PyMuPDF find_tables() with markdown output",
-            "layout_detection": {
-                "multi_column": ENABLE_MULTI_COLUMN_DETECTION,
-                "header_detection": ENABLE_HEADER_FOOTER_DETECTION,
-                "footer_detection": ENABLE_HEADER_FOOTER_DETECTION,
-                "header_margin": f"{HEADER_MARGIN_RATIO * 100}% of page height",
-                "footer_margin": f"{FOOTER_MARGIN_RATIO * 100}% of page height",
-            },
-            "metadata_extraction": [
-                "title", "author", "subject", "keywords", 
-                "creator", "producer", "creation_date", "modification_date",
-                "table_of_contents"
-            ],
-            "image_extraction": {
-                "enabled": True,
-                "compression": AUTO_COMPRESS_IMAGES,
-                "deduplication": True,
-                "min_dimensions": f"{MIN_IMAGE_WIDTH}x{MIN_IMAGE_HEIGHT}",
-                "min_size": f"{MIN_IMAGE_SIZE_BYTES} bytes",
-            }
-        },
-        "output_formats": ["json", "markdown"],
-        "request_headers": {
-            "X-Filename": "Original filename (required)",
-            "X-Extract-Images": "true/false (default: false)",
-            "X-Extract-Tables": "true/false (default: true)",
-            "X-Detect-Layout": "true/false (default: true)",
-            "X-Extract-Metadata": "true/false (default: true)",
-            "X-Exclude-Headers-Footers": "true/false (default: false)",
-            "outputContentFormat": "json/markdown (default: json)",
+            "pdf": f"Docling {'Available' if DOCLING_AVAILABLE else 'Not Found'} + PyMuPDF",
         }
     }
 
 if __name__ == "__main__":
     import uvicorn
+    # Initialize Docling on startup to warm up models
+    if DOCLING_AVAILABLE:
+        get_docling_converter()
     uvicorn.run(app, host="0.0.0.0", port=8000)
