@@ -87,7 +87,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Enhanced Content Processing Engine",
     description="An API to extract text, tables, layout, and metadata from documents for OpenWebUI.",
-    version="2.0.0"
+    version="2.1.0"
 )
 
 # =============================================================================
@@ -172,7 +172,7 @@ class LayoutInfo:
             self.columns = []
 
 # =============================================================================
-# TEXT NORMALIZATION
+# TEXT NORMALIZATION & CLEANING
 # =============================================================================
 
 def normalize_text_encoding(text: str) -> str:
@@ -201,6 +201,7 @@ def normalize_text_encoding(text: str) -> str:
         for unicode_char, replacement in replacements.items():
             normalized = normalized.replace(unicode_char, replacement)
         
+        # Strip control characters except newline and tab
         normalized = ''.join(
             char for char in normalized 
             if char == '\n' or char == '\t' or not unicodedata.category(char).startswith('C')
@@ -216,6 +217,36 @@ def normalize_text_encoding(text: str) -> str:
             return text.replace('\u00a0', ' ').replace('\xa0', ' ')
         except:
             return text
+
+def clean_cell_content(text: str) -> str:
+    """
+    Aggressively cleans table cell content to ensure valid Markdown and remove PDF artifacts.
+    Handles broken newlines, isolated dots, and mashed text.
+    """
+    if not text:
+        return ""
+    
+    # 1. Basic normalization
+    text = normalize_text_encoding(text)
+    
+    # 2. Critical: Replace newlines with spaces. 
+    # Markdown tables break immediately if a cell contains a newline.
+    text = text.replace('\n', ' ').replace('\r', '')
+    
+    # 3. Remove common PDF table artifacts (isolated dots, dashes, underscores)
+    # Often occurring in empty cells, phantom column separators, or OCR noise (e.g., ". .")
+    if re.match(r'^[\s\.\-\_]+$', text):
+        return ""
+        
+    # 4. Fix mashed words (e.g., "word1.word2" -> "word1. word2")
+    # Adds a space after a period if followed immediately by a capital letter.
+    # This helps with sentences that lose spacing during PDF extraction.
+    text = re.sub(r'\.([A-Z])', r'. \1', text)
+    
+    # 5. Collapse multiple spaces into one and strip edges
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    return text
 
 # =============================================================================
 # DEBUG OUTPUT
@@ -357,6 +388,7 @@ def get_table_of_contents(doc: fitz.Document) -> List[Dict]:
 def extract_tables_from_page(page: fitz.Page, page_num: int) -> List[ExtractedTable]:
     """
     Extract tables from a PDF page using PyMuPDF's find_tables() method.
+    Includes cell cleaning to remove artifacts and fix newlines.
     """
     extracted_tables = []
     
@@ -381,7 +413,8 @@ def extract_tables_from_page(page: fitz.Page, page_num: int) -> List[ExtractedTa
                 for row_idx, row in enumerate(table_data):
                     for col_idx, cell_content in enumerate(row):
                         if cell_content is not None:
-                            cell_text = normalize_text_encoding(str(cell_content))
+                            # Apply robust cleaning to the raw cell text
+                            cell_text = clean_cell_content(str(cell_content))
                             cells.append(TableCell(
                                 row_index=row_idx,
                                 col_index=col_idx,
@@ -389,7 +422,7 @@ def extract_tables_from_page(page: fitz.Page, page_num: int) -> List[ExtractedTa
                                 is_header=(row_idx == 0)  # First row as header by default
                             ))
                 
-                # Generate markdown representation
+                # Generate markdown representation using the cleaned data logic
                 markdown = table_to_markdown(table_data)
                 
                 # Get bounding box
@@ -427,24 +460,30 @@ def extract_tables_from_page(page: fitz.Page, page_num: int) -> List[ExtractedTa
 
 def table_to_markdown(table_data: List[List]) -> str:
     """
-    Convert table data to markdown format.
+    Convert table data to markdown format with strict single-line rows and cleanup.
     """
     if not table_data or len(table_data) == 0:
         return ""
     
-    # Normalize all cells to strings
+    # Normalize all cells to strings and clean them
     normalized = []
+    max_cols = 0
+    
     for row in table_data:
         normalized_row = []
         for cell in row:
-            cell_str = normalize_text_encoding(str(cell)) if cell is not None else ""
-            # Escape pipe characters in cell content
+            # Use the robust cleaner
+            cell_str = clean_cell_content(str(cell)) if cell is not None else ""
+            
+            # Escape pipe characters as they define columns in markdown
             cell_str = cell_str.replace("|", "\\|")
+            
             normalized_row.append(cell_str)
+        
         normalized.append(normalized_row)
+        max_cols = max(max_cols, len(normalized_row))
     
-    # Ensure all rows have same number of columns
-    max_cols = max(len(row) for row in normalized)
+    # Ensure all rows have same number of columns (pad with empty strings)
     for row in normalized:
         while len(row) < max_cols:
             row.append("")
@@ -452,9 +491,10 @@ def table_to_markdown(table_data: List[List]) -> str:
     # Build markdown
     lines = []
     
-    # Header row
     if normalized:
+        # Header row
         lines.append("| " + " | ".join(normalized[0]) + " |")
+        
         # Separator row
         lines.append("|" + "|".join(["---"] * max_cols) + "|")
         
@@ -621,13 +661,6 @@ def extract_text_from_blocks(blocks: List[Dict]) -> str:
 def is_block_in_table(block_bbox: Tuple[float, float, float, float], table_bboxes: List[Tuple[float, float, float, float]]) -> bool:
     """
     Check if a text block is located inside any detected table.
-    
-    Args:
-        block_bbox: (x0, y0, x1, y1) of the text block
-        table_bboxes: List of table bounding boxes
-        
-    Returns:
-        True if the block overlaps significantly with a table
     """
     if not table_bboxes:
         return False
@@ -656,18 +689,6 @@ def is_block_in_table(block_bbox: Tuple[float, float, float, float], table_bboxe
 def extract_text_with_layout(page: fitz.Page, layout: LayoutInfo, exclude_headers_footers: bool = False, table_bboxes: List[Tuple] = None) -> str:
     """
     Extract text from a page respecting layout and excluding specific regions (tables, headers, footers).
-    
-    Uses PyMuPDF's 'blocks' output (sort=True) to ensure reading order (columns) is respected,
-    while allowing for coordinate-based filtering of tables and artifacts.
-    
-    Args:
-        page: PyMuPDF Page object
-        layout: LayoutInfo with detected columns/regions
-        exclude_headers_footers: Whether to exclude header/footer text
-        table_bboxes: List of table bounding boxes to exclude
-        
-    Returns:
-        Text extracted in reading order
     """
     table_bboxes = table_bboxes or []
     
@@ -1363,7 +1384,7 @@ def read_root():
     return {
         "status": "ok",
         "message": "Enhanced Content Processing Engine is running.",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "features": {
             "pdf_processing": "PyMuPDF with enhanced extraction",
             "table_extraction": "Structured tables with markdown output",
@@ -1391,7 +1412,7 @@ def health_check():
     """Health check endpoint."""
     return {
         "status": "healthy",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "processors": {
             "pdf": "PyMuPDF - Available (Enhanced)",
             "docx": f"python-docx - {'Available' if DOCX_AVAILABLE else 'Not Available'}",
