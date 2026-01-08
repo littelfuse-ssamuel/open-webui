@@ -232,7 +232,7 @@ def split_markdown_by_pages(markdown: str, expected_page_count: int = 0) -> List
     
     # Split on "Page X of Y" markers (Docling format)
     # Pattern handles: "Page 4 of 24" with optional surrounding newlines
-    page_pattern = r'\n*Page \d+ of \d+\n*'
+    page_pattern = r'(?:\n\s*)*Page \d+ of \d+(?:\s*\n)*'
     
     # Split and filter empty strings
     pages = re.split(page_pattern, markdown)
