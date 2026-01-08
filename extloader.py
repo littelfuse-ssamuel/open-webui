@@ -215,6 +215,45 @@ def normalize_text_encoding(text: str) -> str:
     except Exception:
         return text
 
+
+def split_markdown_by_pages(markdown: str, expected_page_count: int = 0) -> List[str]:
+    """
+    Split Docling markdown output into per-page content using 'Page X of Y' markers.
+    
+    Args:
+        markdown: Full markdown string from Docling
+        expected_page_count: Expected number of pages (for validation logging)
+        
+    Returns:
+        List of strings, one per page
+    """
+    if not markdown:
+        return []
+    
+    # Split on "Page X of Y" markers (Docling format)
+    # Pattern handles: "Page 4 of 24" with optional surrounding newlines
+    page_pattern = r'\n*Page \d+ of \d+\n*'
+    
+    # Split and filter empty strings
+    pages = re.split(page_pattern, markdown)
+    pages = [page.strip() for page in pages if page.strip()]
+    
+    # Log warning if page count doesn't match expected
+    if expected_page_count > 0 and len(pages) != expected_page_count:
+        logger.warning(
+            f"Page count mismatch: split into {len(pages)} pages, "
+            f"expected {expected_page_count} from metadata"
+        )
+    
+    # If splitting failed (no markers found), return original as single page
+    if not pages:
+        logger.warning("No page markers found in Docling output, returning as single page")
+        return [markdown.strip()]
+    
+    logger.info(f"Split markdown into {len(pages)} pages")
+    return pages
+
+
 def write_debug_output(filename: str, page_content: str, full_result: dict) -> None:
     if not EXTLOADER_DEBUG_OUTPUT:
         return
@@ -387,11 +426,12 @@ def process_pdf_enhanced(
         full_markdown = doc.export_to_markdown()
         result["page_content"] = full_markdown
         
-        # Populate 'pages' list. 
-        # Note: Docling is a continuous document model. We put the full text in 
-        # the first element or splitting by headers if critical. 
-        # For now, we provide the full text to ensure searchability.
-        result["pages"] = [full_markdown] 
+        # Populate 'pages' list by splitting on Docling's page markers
+        # This restores per-page structure needed by downstream agents (e.g., RequirementsAgentV2)
+        result["pages"] = split_markdown_by_pages(
+            full_markdown, 
+            result["document_metadata"].get("page_count", 0)
+        )
         
         # 2. Extract Tables
         if extract_tables:
