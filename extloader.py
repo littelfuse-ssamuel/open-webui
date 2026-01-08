@@ -23,7 +23,8 @@ from datetime import datetime
 try:
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.datamodel.base_models import InputFormat, DocumentStream
-    from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
+    from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode, AcceleratorOptions, AcceleratorDevice
+    from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
     DOCLING_AVAILABLE = True
 except ImportError:
     DOCLING_AVAILABLE = False
@@ -97,6 +98,13 @@ app = FastAPI(
 # We initialize this ONCE to avoid reloading PyTorch models on every request.
 docling_converter = None
 
+# Configuration: Use pypdfium2 backend for faster digital PDF processing
+# Set to False to use default vision-based backend (more accurate for complex layouts)
+USE_FAST_BACKEND = os.getenv("DOCLING_USE_FAST_BACKEND", "true").lower() == "true"
+
+# Number of threads for CPU processing (defaults to CPU count or 8)
+DOCLING_NUM_THREADS = int(os.getenv("DOCLING_NUM_THREADS", os.cpu_count() or 8))
+
 def get_docling_converter():
     global docling_converter
     if not DOCLING_AVAILABLE:
@@ -104,16 +112,41 @@ def get_docling_converter():
         
     if docling_converter is None:
         logger.info("Initializing Docling DocumentConverter (this may take a moment)...")
-        # Configure pipeline: Enable table structure recognition
+        logger.info(f"  - Fast backend (pypdfium2): {USE_FAST_BACKEND}")
+        logger.info(f"  - CPU threads: {DOCLING_NUM_THREADS}")
+        
+        # Configure accelerator for CPU optimization
+        accelerator_options = AcceleratorOptions(
+            num_threads=DOCLING_NUM_THREADS,
+            device=AcceleratorDevice.CPU  # Explicit CPU usage
+        )
+        
+        # Configure pipeline with speed optimizations
         pipeline_options = PdfPipelineOptions()
         pipeline_options.do_table_structure = True
         pipeline_options.do_ocr = False  # Keep false for speed unless needed
         
-        docling_converter = DocumentConverter(
-            format_options={
-                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-            }
-        )
+        # SPEED OPTIMIZATIONS - disable image generation (not needed for text/markdown extraction)
+        pipeline_options.generate_page_images = False    # Huge speedup - don't render pages
+        pipeline_options.generate_picture_images = False # Don't extract icons/images
+        pipeline_options.images_scale = 1.0              # Keep at 1.0 (default 2.0 is slower)
+        
+        # Apply accelerator options
+        pipeline_options.accelerator_options = accelerator_options
+        
+        # Build converter with optional fast backend
+        format_options = {
+            InputFormat.PDF: PdfFormatOption(
+                pipeline_options=pipeline_options,
+                backend=PyPdfiumDocumentBackend if USE_FAST_BACKEND else None
+            )
+        }
+        
+        # Remove None backend (use default)
+        if not USE_FAST_BACKEND:
+            format_options[InputFormat.PDF] = PdfFormatOption(pipeline_options=pipeline_options)
+        
+        docling_converter = DocumentConverter(format_options=format_options)
         logger.info("Docling DocumentConverter initialized successfully.")
     return docling_converter
 
@@ -957,6 +990,12 @@ def read_root():
             "xlsx": OPENPYXL_AVAILABLE,
             "pptx": PPTX_AVAILABLE,
             "rtf": RTF_AVAILABLE,
+        },
+        "optimizations": {
+            "fast_backend_pypdfium2": USE_FAST_BACKEND,
+            "cpu_threads": DOCLING_NUM_THREADS,
+            "page_image_generation": False,
+            "picture_image_generation": False,
         }
     }
 
@@ -967,6 +1006,10 @@ def health_check():
         "docling_loaded": docling_converter is not None,
         "processors": {
             "pdf": f"Docling {'Available' if DOCLING_AVAILABLE else 'Not Found'} + PyMuPDF",
+        },
+        "optimizations": {
+            "fast_backend": USE_FAST_BACKEND,
+            "threads": DOCLING_NUM_THREADS,
         }
     }
 
