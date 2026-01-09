@@ -249,42 +249,76 @@ def normalize_text_encoding(text: str) -> str:
         return text
 
 
-def split_markdown_by_pages(markdown: str, expected_page_count: int = 0) -> List[str]:
+def reconstruct_pages_from_docling(doc) -> List[str]:
     """
-    Split Docling markdown output into per-page content using 'Page X of Y' markers.
-    
-    Args:
-        markdown: Full markdown string from Docling
-        expected_page_count: Expected number of pages (for validation logging)
-        
-    Returns:
-        List of strings, one per page
+    Reconstructs page-by-page markdown from the Docling document structure using provenance.
+    This avoids reliance on unreliable text splitters (e.g. 'Page X of Y' regex) and ensures
+    downstream agents receive a correctly indexed list of pages.
     """
-    if not markdown:
+    if not doc:
         return []
+
+    page_content_map = {}
+    max_page = 0
     
-    # Split on "Page X of Y" markers (Docling format)
-    # Pattern handles: "Page 4 of 24" with optional surrounding newlines
-    page_pattern = r'(?:\n\s*)*Page \d+ of \d+(?:\s*\n)*'
+    # Iterate through the document structure in reading order.
+    # We use iterate_items() to walk the document body (Texts, Tables, Section Headers, etc.)
+    # doc.iterate_items() yields (item, level) tuples.
+    iterator = None
+    if hasattr(doc, "iterate_items"):
+        iterator = doc.iterate_items()
+    elif hasattr(doc.body, "iterate"):
+        # Fallback for older Docling versions
+        iterator = doc.body.iterate()
     
-    # Split and filter empty strings
-    pages = re.split(page_pattern, markdown)
-    pages = [page.strip() for page in pages if page.strip()]
+    if iterator:
+        for item, _ in iterator:
+            # We rely on 'prov' (provenance) to identify the page number
+            if not hasattr(item, "prov") or not item.prov:
+                continue
+            
+            # Use the first provenance entry to determine the primary page
+            # Docling page numbers are 1-based
+            page_no = item.prov[0].page_no
+            max_page = max(max_page, page_no)
+            
+            if page_no not in page_content_map:
+                page_content_map[page_no] = []
+            
+            # Export the individual item to markdown
+            text_chunk = ""
+            if hasattr(item, "export_to_markdown"):
+                text_chunk = item.export_to_markdown()
+            elif hasattr(item, "text"):
+                text_chunk = item.text
+            
+            # Filter out image placeholders since we handle images separately
+            # Docling defaults to inserting "<!-- image -->" for pictures
+            if text_chunk and text_chunk.strip() == "<!-- image -->":
+                continue
+
+            # Append chunk if valid
+            if text_chunk and text_chunk.strip():
+                page_content_map[page_no].append(text_chunk)
+    else:
+        # Fallback if iteration fails: return the whole doc as one page
+        logger.warning("Docling iteration unavailable; returning single page.")
+        return [doc.export_to_markdown()]
+
+    # Construct the final list ensuring all pages are represented (even if empty)
+    # Use doc.page_count if available, otherwise implied max_page
+    total_pages = getattr(doc, "page_count", max_page)
+    pages_list = []
     
-    # Log warning if page count doesn't match expected
-    if expected_page_count > 0 and len(pages) != expected_page_count:
-        logger.warning(
-            f"Page count mismatch: split into {len(pages)} pages, "
-            f"expected {expected_page_count} from metadata"
-        )
-    
-    # If splitting failed (no markers found), return original as single page
-    if not pages:
-        logger.warning("No page markers found in Docling output, returning as single page")
-        return [markdown.strip()]
-    
-    logger.info(f"Split markdown into {len(pages)} pages")
-    return pages
+    for i in range(1, total_pages + 1):
+        if i in page_content_map:
+            # Join the items for this page with spacing
+            pages_list.append("\n\n".join(page_content_map[i]))
+        else:
+            pages_list.append("") # Empty or skipped page
+            
+    logger.info(f"Reconstructed {len(pages_list)} pages from Docling provenance.")
+    return pages_list
 
 
 def write_debug_output(filename: str, page_content: str, full_result: dict) -> None:
@@ -459,12 +493,11 @@ def process_pdf_enhanced(
         full_markdown = doc.export_to_markdown()
         result["page_content"] = full_markdown
         
-        # Populate 'pages' list by splitting on Docling's page markers
-        # This restores per-page structure needed by downstream agents (e.g., RequirementsAgentV2)
-        result["pages"] = split_markdown_by_pages(
-            full_markdown, 
-            result["document_metadata"].get("page_count", 0)
-        )
+        # ---------------------------------------------------------------------
+        # Reconstruct Pages from Internal Structure
+        # ---------------------------------------------------------------------
+        # we iterate through the document items and group them by their provenance page number.
+        result["pages"] = reconstruct_pages_from_docling(doc)
         
         # 2. Extract Tables
         if extract_tables:
