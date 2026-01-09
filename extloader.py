@@ -226,26 +226,66 @@ def reconstruct_pages_from_azure(result: Any) -> Tuple[List[str], str]:
     Reconstructs page-by-page text from Azure result structure.
     This ensures strict page splitting by mapping paragraphs and tables 
     to their page numbers and sorting by reading order (offset).
+    
+    IMPORTANT: Excludes paragraph text that falls within table spans to avoid duplication.
     """
     if not result:
+        logger.warning("reconstruct_pages_from_azure: result is None or empty")
         return [], ""
+    
+    # Debug: Log what attributes are available
+    logger.info(f"Azure result attributes: {[attr for attr in dir(result) if not attr.startswith('_')]}")
+    logger.info(f"result.pages: {type(result.pages) if hasattr(result, 'pages') else 'NOT FOUND'}, count: {len(result.pages) if result.pages else 0}")
+    logger.info(f"result.paragraphs: {type(result.paragraphs) if hasattr(result, 'paragraphs') else 'NOT FOUND'}, count: {len(result.paragraphs) if result.paragraphs else 0}")
+    logger.info(f"result.tables: {type(result.tables) if hasattr(result, 'tables') else 'NOT FOUND'}, count: {len(result.tables) if result.tables else 0}")
         
     # 1. Bucketize content by page
     # Maps page_number (1-based) -> list of (offset, content_type, content_obj)
     page_map: Dict[int, List[Tuple[int, str, Any]]] = {}
     total_pages = len(result.pages) if result.pages else 0
     
+    if total_pages == 0:
+        logger.warning("reconstruct_pages_from_azure: No pages found in result")
+        # Fallback: check if there's content attribute
+        if hasattr(result, 'content') and result.content:
+            logger.info(f"Fallback: Using result.content (length: {len(result.content)})")
+            return [result.content], result.content
+        return [], ""
+    
     # Initialize buckets
     for i in range(1, total_pages + 1):
         page_map[i] = []
 
-    # 2. Process Paragraphs (Text)
+    # 2. Build table span ranges to exclude from paragraphs
+    # This prevents duplicate content (table cells appearing both as paragraphs and in table markdown)
+    table_spans = set()  # Set of (page_num, offset) tuples that are covered by tables
+    if result.tables:
+        for t in result.tables:
+            if not t.spans:
+                continue
+            for span in t.spans:
+                # Mark all offsets in this table's span as "covered"
+                for offset in range(span.offset, span.offset + span.length):
+                    # We'll check paragraph offsets against this
+                    table_spans.add(offset)
+    
+    logger.info(f"Table spans cover {len(table_spans)} character positions")
+
+    # 3. Process Paragraphs (Text) - excluding those inside tables
+    paragraphs_added = 0
+    paragraphs_skipped = 0
     if result.paragraphs:
         for p in result.paragraphs:
-            if not p.bounding_regions: continue
+            if not p.bounding_regions: 
+                continue
             
             page_num = p.bounding_regions[0].page_number
             offset = p.spans[0].offset if p.spans else 0
+            
+            # Skip paragraphs that fall within table spans
+            if offset in table_spans:
+                paragraphs_skipped += 1
+                continue
             
             # Determine role for markdown formatting
             text = p.content
@@ -258,12 +298,16 @@ def reconstruct_pages_from_azure(result: Any) -> Tuple[List[str], str]:
                 
             if page_num in page_map:
                 page_map[page_num].append((offset, "text", text))
+                paragraphs_added += 1
+    
+    logger.info(f"Paragraphs: {paragraphs_added} added, {paragraphs_skipped} skipped (inside tables)")
 
-    # 3. Process Tables
+    # 4. Process Tables
     # We treat tables as a single block inserted at their starting offset
     if result.tables:
         for t in result.tables:
-            if not t.bounding_regions: continue
+            if not t.bounding_regions: 
+                continue
             
             page_num = t.bounding_regions[0].page_number
             offset = t.spans[0].offset if t.spans else 0
@@ -274,7 +318,7 @@ def reconstruct_pages_from_azure(result: Any) -> Tuple[List[str], str]:
             if page_num in page_map:
                 page_map[page_num].append((offset, "table", table_md))
 
-    # 4. Construct Final Pages
+    # 5. Construct Final Pages with clear separators
     final_pages = []
     full_content = []
     
@@ -285,9 +329,17 @@ def reconstruct_pages_from_azure(result: Any) -> Tuple[List[str], str]:
         
         # Join content with newlines
         page_text = "\n\n".join([item[2] for item in items])
-        final_pages.append(page_text)
-        full_content.append(page_text)
         
+        # Add page marker for clarity (helps downstream parsing)
+        if page_text.strip():
+            page_with_marker = f"--- Page {i} of {total_pages} ---\n\n{page_text}"
+        else:
+            page_with_marker = f"--- Page {i} of {total_pages} ---\n\n[No text content on this page]"
+        
+        final_pages.append(page_text)  # Raw page content for array
+        full_content.append(page_with_marker)  # Marked content for full text
+    
+    logger.info(f"reconstruct_pages_from_azure: Built {len(final_pages)} pages, total content length: {len(''.join(full_content))}")
     return final_pages, "\n\n".join(full_content)
 
 def write_debug_output(filename: str, page_content: str, full_result: dict) -> None:
