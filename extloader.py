@@ -286,9 +286,15 @@ def reconstruct_pages_from_docling(doc) -> List[str]:
                 page_content_map[page_no] = []
             
             # Export the individual item to markdown
+            # Note: Some item types (e.g., PictureItem) require the doc parameter
             text_chunk = ""
             if hasattr(item, "export_to_markdown"):
-                text_chunk = item.export_to_markdown()
+                try:
+                    # Try with doc parameter first (newer Docling API)
+                    text_chunk = item.export_to_markdown(doc)
+                except TypeError:
+                    # Fall back to no-arg version (older API or items that don't need doc)
+                    text_chunk = item.export_to_markdown()
             elif hasattr(item, "text"):
                 text_chunk = item.text
             
@@ -543,7 +549,10 @@ def process_pdf_enhanced(
                     bbox = (0, 0, 0, 0)
                     
                     # Get Markdown representation
-                    table_md = table_element.export_to_markdown()
+                    try:
+                        table_md = table_element.export_to_markdown(doc)
+                    except TypeError:
+                        table_md = table_element.export_to_markdown()
 
                     result["tables"].append(ExtractedTable(
                         page_number=page_no,
