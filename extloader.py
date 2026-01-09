@@ -23,7 +23,7 @@ from datetime import datetime
 try:
     from azure.core.credentials import AzureKeyCredential
     from azure.ai.documentintelligence import DocumentIntelligenceClient
-    from azure.ai.documentintelligence.models import AnalyzeResult
+    from azure.ai.documentintelligence.models import AnalyzeResult, AnalyzeDocumentRequest
     AZURE_AVAILABLE = True
 except ImportError:
     AZURE_AVAILABLE = False
@@ -443,11 +443,10 @@ def process_pdf_enhanced(
     try:
         logger.info(f"Starting Azure analysis for {filename}...")
         
-        # Analyze Document
+        # Analyze Document (SDK v1.0.0+ requires body parameter)
         poller = client.begin_analyze_document(
-            "prebuilt-layout",
-            analyze_request=BytesIO(file_bytes),
-            content_type="application/pdf"
+            model_id="prebuilt-layout",
+            body=AnalyzeDocumentRequest(bytes_source=file_bytes)
         )
         analyze_result: AnalyzeResult = poller.result()
         
