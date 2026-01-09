@@ -18,16 +18,15 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 
 # =============================================================================
-# DOCLING IMPORTS (The new brain)
+# AZURE IMPORTS (The new brain)
 # =============================================================================
 try:
-    from docling.document_converter import DocumentConverter, PdfFormatOption
-    from docling.datamodel.base_models import InputFormat, DocumentStream
-    from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode, AcceleratorOptions, AcceleratorDevice
-    from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
-    DOCLING_AVAILABLE = True
+    from azure.core.credentials import AzureKeyCredential
+    from azure.ai.documentintelligence import DocumentIntelligenceClient
+    from azure.ai.documentintelligence.models import AnalyzeResult
+    AZURE_AVAILABLE = True
 except ImportError:
-    DOCLING_AVAILABLE = False
+    AZURE_AVAILABLE = False
 
 # =============================================================================
 # LEGACY / FAST PROCESSOR IMPORTS
@@ -64,8 +63,7 @@ try:
 except ImportError:
     PILLOW_AVAILABLE = False
 
-# Azure Document Intelligence compatible output formats
-AZURE_DOC_INTEL_COMPATIBLE = True
+# Config
 DEFAULT_OUTPUT_FORMAT = "json"  # or "markdown"
 
 # Image processing settings
@@ -81,74 +79,36 @@ MIN_IMAGE_SIZE_BYTES = int(os.getenv("MIN_IMAGE_SIZE_BYTES", "1024"))
 EXTLOADER_DEBUG_OUTPUT = os.getenv("EXTLOADER_DEBUG_OUTPUT", "false").lower() == "true"
 EXTLOADER_DEBUG_PATH = os.getenv("EXTLOADER_DEBUG_PATH", "/app/backend/data/extloader_debug")
 
+# Azure Configuration
+AZURE_ENDPOINT = os.getenv("DOCUMENT_INTELLIGENCE_ENDPOINT", "")
+AZURE_KEY = os.getenv("DOCUMENT_INTELLIGENCE_KEY", "")
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize the FastAPI application
 app = FastAPI(
-    title="Enhanced Content Processing Engine (Docling)",
-    description="An API to extract text, tables, layout, and metadata using Docling & PyMuPDF.",
-    version="3.0.0"
+    title="Enhanced Content Processing Engine (Azure + PyMuPDF)",
+    description="An API to extract text, tables, layout, and metadata using Azure Document Intelligence & PyMuPDF.",
+    version="3.1.0"
 )
 
 # =============================================================================
-# GLOBAL DOCLING CONVERTER (Singleton)
+# AZURE CLIENT HELPERS
 # =============================================================================
-# We initialize this ONCE to avoid reloading PyTorch models on every request.
-docling_converter = None
 
-# Configuration: Use pypdfium2 backend for faster digital PDF processing
-# Set to False to use default vision-based backend (more accurate for complex layouts)
-USE_FAST_BACKEND = os.getenv("DOCLING_USE_FAST_BACKEND", "true").lower() == "true"
-
-# Number of threads for CPU processing (defaults to CPU count or 8)
-DOCLING_NUM_THREADS = int(os.getenv("DOCLING_NUM_THREADS", os.cpu_count() or 8))
-
-def get_docling_converter():
-    global docling_converter
-    if not DOCLING_AVAILABLE:
+def get_azure_client():
+    if not AZURE_AVAILABLE:
         return None
-        
-    if docling_converter is None:
-        logger.info("Initializing Docling DocumentConverter (this may take a moment)...")
-        logger.info(f"  - Fast backend (pypdfium2): {USE_FAST_BACKEND}")
-        logger.info(f"  - CPU threads: {DOCLING_NUM_THREADS}")
-        
-        # Configure accelerator for CPU optimization
-        accelerator_options = AcceleratorOptions(
-            num_threads=DOCLING_NUM_THREADS,
-            device=AcceleratorDevice.CPU  # Explicit CPU usage
-        )
-        
-        # Configure pipeline with speed optimizations
-        pipeline_options = PdfPipelineOptions()
-        pipeline_options.do_table_structure = True
-        pipeline_options.do_ocr = False  # Keep false for speed unless needed
-        
-        # SPEED OPTIMIZATIONS - disable image generation (not needed for text/markdown extraction)
-        pipeline_options.generate_page_images = False    # Huge speedup - don't render pages
-        pipeline_options.generate_picture_images = False # Don't extract icons/images
-        pipeline_options.images_scale = 1.0              # Keep at 1.0 (default 2.0 is slower)
-        
-        # Apply accelerator options
-        pipeline_options.accelerator_options = accelerator_options
-        
-        # Build converter with optional fast backend
-        format_options = {
-            InputFormat.PDF: PdfFormatOption(
-                pipeline_options=pipeline_options,
-                backend=PyPdfiumDocumentBackend if USE_FAST_BACKEND else None
-            )
-        }
-        
-        # Remove None backend (use default)
-        if not USE_FAST_BACKEND:
-            format_options[InputFormat.PDF] = PdfFormatOption(pipeline_options=pipeline_options)
-        
-        docling_converter = DocumentConverter(format_options=format_options)
-        logger.info("Docling DocumentConverter initialized successfully.")
-    return docling_converter
+    if not AZURE_ENDPOINT or not AZURE_KEY:
+        logger.error("Azure credentials missing. Set AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT and AZURE_DOCUMENT_INTELLIGENCE_KEY.")
+        return None
+    
+    return DocumentIntelligenceClient(
+        endpoint=AZURE_ENDPOINT, 
+        credential=AzureKeyCredential(AZURE_KEY)
+    )
 
 # =============================================================================
 # DATA CLASSES
@@ -206,29 +166,8 @@ class ExtractedTable:
             "header_external": self.header_external
         }
 
-@dataclass 
-class LayoutInfo:
-    """
-    Layout information.
-    Note: With Docling, explicit column detection is abstracted, 
-    so we populate this with basic page dims for compatibility.
-    """
-    page_number: int
-    width: float
-    height: float
-    column_count: int = 1
-    has_header: bool = False
-    has_footer: bool = False
-    header_content: str = ""
-    footer_content: str = ""
-    columns: List[Tuple[float, float, float, float]] = None 
-    
-    def __post_init__(self):
-        if self.columns is None:
-            self.columns = []
-
 # =============================================================================
-# TEXT UTILS
+# TEXT UTILS & RECONSTRUCTION
 # =============================================================================
 
 def normalize_text_encoding(text: str) -> str:
@@ -248,84 +187,108 @@ def normalize_text_encoding(text: str) -> str:
     except Exception:
         return text
 
-
-def reconstruct_pages_from_docling(doc) -> List[str]:
+def azure_table_to_markdown(table) -> str:
     """
-    Reconstructs page-by-page markdown from the Docling document structure using provenance.
-    This avoids reliance on unreliable text splitters (e.g. 'Page X of Y' regex) and ensures
-    downstream agents receive a correctly indexed list of pages.
+    Converts an Azure Table object into a Markdown string.
+    This is required to embed tables into the page text.
     """
-    if not doc:
-        return []
+    if not table.row_count or not table.column_count:
+        return ""
 
-    page_content_map = {}
-    max_page = 0
+    # Initialize grid
+    grid = [["" for _ in range(table.column_count)] for _ in range(table.row_count)]
     
-    # Iterate through the document structure in reading order.
-    # We use iterate_items() to walk the document body (Texts, Tables, Section Headers, etc.)
-    # doc.iterate_items() yields (item, level) tuples.
-    iterator = None
-    if hasattr(doc, "iterate_items"):
-        iterator = doc.iterate_items()
-    elif hasattr(doc.body, "iterate"):
-        # Fallback for older Docling versions
-        iterator = doc.body.iterate()
+    # Fill grid
+    for cell in table.cells:
+        r = cell.row_index
+        c = cell.column_index
+        content = normalize_text_encoding(cell.content).replace("\n", " ")
+        # Handle spans roughly by filling the top-left (rendering limits apply)
+        if r < table.row_count and c < table.column_count:
+            grid[r][c] = content
+
+    # Build Markdown
+    md_lines = []
     
-    if iterator:
-        for item, _ in iterator:
-            # We rely on 'prov' (provenance) to identify the page number
-            if not hasattr(item, "prov") or not item.prov:
-                continue
-            
-            # Use the first provenance entry to determine the primary page
-            # Docling page numbers are 1-based
-            page_no = item.prov[0].page_no
-            max_page = max(max_page, page_no)
-            
-            if page_no not in page_content_map:
-                page_content_map[page_no] = []
-            
-            # Export the individual item to markdown
-            # Note: Some item types (e.g., PictureItem) require the doc parameter
-            text_chunk = ""
-            if hasattr(item, "export_to_markdown"):
-                try:
-                    # Try with doc parameter first (newer Docling API)
-                    text_chunk = item.export_to_markdown(doc)
-                except TypeError:
-                    # Fall back to no-arg version (older API or items that don't need doc)
-                    text_chunk = item.export_to_markdown()
-            elif hasattr(item, "text"):
-                text_chunk = item.text
-            
-            # Filter out image placeholders since we handle images separately
-            # Docling defaults to inserting "<!-- image -->" for pictures
-            if text_chunk and text_chunk.strip() == "<!-- image -->":
-                continue
+    # Header row
+    header_row = grid[0]
+    md_lines.append("| " + " | ".join(header_row) + " |")
+    md_lines.append("| " + " | ".join(["---"] * len(header_row)) + " |")
+    
+    # Data rows
+    for row in grid[1:]:
+        md_lines.append("| " + " | ".join(row) + " |")
+        
+    return "\n".join(md_lines)
 
-            # Append chunk if valid
-            if text_chunk and text_chunk.strip():
-                page_content_map[page_no].append(text_chunk)
-    else:
-        # Fallback if iteration fails: return the whole doc as one page
-        logger.warning("Docling iteration unavailable; returning single page.")
-        return [doc.export_to_markdown()]
+def reconstruct_pages_from_azure(result: Any) -> Tuple[List[str], str]:
+    """
+    Reconstructs page-by-page text from Azure result structure.
+    This ensures strict page splitting by mapping paragraphs and tables 
+    to their page numbers and sorting by reading order (offset).
+    """
+    if not result:
+        return [], ""
+        
+    # 1. Bucketize content by page
+    # Maps page_number (1-based) -> list of (offset, content_type, content_obj)
+    page_map: Dict[int, List[Tuple[int, str, Any]]] = {}
+    total_pages = len(result.pages) if result.pages else 0
+    
+    # Initialize buckets
+    for i in range(1, total_pages + 1):
+        page_map[i] = []
 
-    # Construct the final list ensuring all pages are represented (even if empty)
-    # Use doc.page_count if available, otherwise implied max_page
-    total_pages = getattr(doc, "page_count", max_page)
-    pages_list = []
+    # 2. Process Paragraphs (Text)
+    if result.paragraphs:
+        for p in result.paragraphs:
+            if not p.bounding_regions: continue
+            
+            page_num = p.bounding_regions[0].page_number
+            offset = p.spans[0].offset if p.spans else 0
+            
+            # Determine role for markdown formatting
+            text = p.content
+            role = getattr(p, "role", None)
+            
+            if role == "title":
+                text = f"# {text}"
+            elif role == "sectionHeading":
+                text = f"## {text}"
+                
+            if page_num in page_map:
+                page_map[page_num].append((offset, "text", text))
+
+    # 3. Process Tables
+    # We treat tables as a single block inserted at their starting offset
+    if result.tables:
+        for t in result.tables:
+            if not t.bounding_regions: continue
+            
+            page_num = t.bounding_regions[0].page_number
+            offset = t.spans[0].offset if t.spans else 0
+            
+            # Convert table to markdown immediately for storage
+            table_md = azure_table_to_markdown(t)
+            
+            if page_num in page_map:
+                page_map[page_num].append((offset, "table", table_md))
+
+    # 4. Construct Final Pages
+    final_pages = []
+    full_content = []
     
     for i in range(1, total_pages + 1):
-        if i in page_content_map:
-            # Join the items for this page with spacing
-            pages_list.append("\n\n".join(page_content_map[i]))
-        else:
-            pages_list.append("") # Empty or skipped page
-            
-    logger.info(f"Reconstructed {len(pages_list)} pages from Docling provenance.")
-    return pages_list
-
+        items = page_map[i]
+        # Sort by offset to preserve reading order
+        items.sort(key=lambda x: x[0])
+        
+        # Join content with newlines
+        page_text = "\n\n".join([item[2] for item in items])
+        final_pages.append(page_text)
+        full_content.append(page_text)
+        
+    return final_pages, "\n\n".join(full_content)
 
 def write_debug_output(filename: str, page_content: str, full_result: dict) -> None:
     if not EXTLOADER_DEBUG_OUTPUT:
@@ -422,7 +385,7 @@ def process_pdf_enhanced(
     output_format: str = "json"
 ) -> Dict[str, Any]:
     """
-    Enhanced PDF processing using Docling for content/layout and PyMuPDF for assets/metadata.
+    Enhanced PDF processing using Azure for content/layout and PyMuPDF for assets/metadata.
     """
     start_time = time.time()
     
@@ -433,7 +396,7 @@ def process_pdf_enhanced(
         "metadata": {
             "source": filename,
             "processing_status": "pending",
-            "engine": "docling_hybrid"
+            "engine": "azure_hybrid"
         },
         "images": [],
         "document_metadata": {},
@@ -451,14 +414,14 @@ def process_pdf_enhanced(
                 result["document_metadata"] = extract_pdf_metadata(doc_fitz).to_dict()
                 result["table_of_contents"] = get_table_of_contents(doc_fitz)
                 
-                # Basic layout info to satisfy schema (since Docling abstracts this)
+                # Basic layout info 
                 for page_num in range(len(doc_fitz)):
                     page = doc_fitz[page_num]
                     result["layout_info"].append({
                         "page_number": page_num + 1,
                         "width": page.rect.width,
                         "height": page.rect.height,
-                        "column_count": 1, # Defaulting, as Docling handles reading order
+                        "column_count": 1,
                         "has_header": False, 
                         "has_footer": False
                     })
@@ -467,110 +430,84 @@ def process_pdf_enhanced(
                 result["images"] = process_images_efficiently(doc_fitz, extract_images_flag, filename)
     except Exception as e:
         logger.error(f"PyMuPDF Phase failed: {e}")
-        # We continue, as Docling might still succeed with text
+        # Continue to Azure phase even if fitz fails (unlikely)
 
     # -------------------------------------------------------------------------
-    # PHASE 2: Docling (Deep Pass)
-    # Extract Layout-Aware Text, Markdown, and Semantic Tables
+    # PHASE 2: Azure Document Intelligence (Deep Pass)
+    # Extract Layout-Aware Text and Semantic Tables
     # -------------------------------------------------------------------------
-    if not DOCLING_AVAILABLE:
-        raise HTTPException(
-            status_code=500, 
-            detail="Docling engine not available. Install 'docling' to use this feature."
-        )
-
-    converter = get_docling_converter()
-    if not converter:
-        raise HTTPException(status_code=500, detail="Failed to initialize Docling converter.")
+    client = get_azure_client()
+    if not client:
+        raise HTTPException(status_code=500, detail="Azure Document Intelligence client not available.")
 
     try:
-        logger.info(f"Starting Docling conversion for {filename}...")
+        logger.info(f"Starting Azure analysis for {filename}...")
         
-        # Prepare stream for Docling
-        buf = BytesIO(file_bytes)
-        source = DocumentStream(name=filename, stream=buf)
+        # Analyze Document
+        poller = client.begin_analyze_document(
+            "prebuilt-layout",
+            analyze_request=BytesIO(file_bytes),
+            content_type="application/pdf"
+        )
+        analyze_result: AnalyzeResult = poller.result()
         
-        # Run Conversion
-        conv_res = converter.convert(source)
-        doc = conv_res.document
+        # 1. Reconstruct Pages & Text
+        # We manually stitch paragraphs and tables together to respect page boundaries
+        pages_list, full_text = reconstruct_pages_from_azure(analyze_result)
+        result["pages"] = pages_list
+        result["page_content"] = full_text
         
-        # 1. Extract Markdown
-        # Docling automatically handles multi-column reading order and headers/footers
-        full_markdown = doc.export_to_markdown()
-        result["page_content"] = full_markdown
-        
-        # ---------------------------------------------------------------------
-        # Reconstruct Pages from Internal Structure
-        # ---------------------------------------------------------------------
-        # we iterate through the document items and group them by their provenance page number.
-        result["pages"] = reconstruct_pages_from_docling(doc)
-        
-        # 2. Extract Tables
-        if extract_tables:
-            for table_idx, table_element in enumerate(doc.tables):
+        # 2. Extract Tables (Structured)
+        if extract_tables and analyze_result.tables:
+            for i, table in enumerate(analyze_result.tables):
                 try:
-                    # Export to DataFrame to get grid data
-                    grid = table_element.export_to_dataframe()
-                    
-                    # Determine page number (Docling uses 1-based indexing in provenance)
-                    page_no = 1
-                    if table_element.prov and len(table_element.prov) > 0:
-                        page_no = table_element.prov[0].page_no
-
-                    # Create standard Cells
+                    # Convert Azure Cells to Internal Schema
                     cells = []
-                    # grid.iterrows() yields (index, Series)
-                    # We need to handle the header row explicitly if it exists in the dataframe
-                    
-                    # Convert dataframe to list of lists including header
-                    headers = grid.columns.tolist()
-                    data_rows = grid.values.tolist()
-                    
-                    # Add Header Row
-                    for col_idx, header_text in enumerate(headers):
+                    for cell in table.cells:
+                        is_header = getattr(cell, "kind", "") == "columnHeader"
                         cells.append(TableCell(
-                            row_index=0,
-                            col_index=col_idx,
-                            content=str(header_text),
-                            is_header=True
+                            row_index=cell.row_index,
+                            col_index=cell.column_index,
+                            content=normalize_text_encoding(cell.content),
+                            row_span=cell.row_span if cell.row_span else 1,
+                            col_span=cell.column_span if cell.column_span else 1,
+                            is_header=is_header
                         ))
                     
-                    # Add Data Rows
-                    for r_idx, row in enumerate(data_rows):
-                        for c_idx, cell_val in enumerate(row):
-                            cells.append(TableCell(
-                                row_index=r_idx + 1, # +1 because 0 is header
-                                col_index=c_idx,
-                                content=str(cell_val) if cell_val is not None else "",
-                                is_header=False
-                            ))
+                    # Page number (default to 1, or the first bounding region)
+                    page_no = 1
+                    if table.bounding_regions:
+                        page_no = table.bounding_regions[0].page_number
+                        
+                    # Calculate simple bbox from polygon
+                    # Azure polygon is [x1, y1, x2, y2, x3, y3, x4, y4]
+                    bbox = (0,0,0,0)
+                    if table.bounding_regions and table.bounding_regions[0].polygon:
+                        poly = table.bounding_regions[0].polygon
+                        xs = poly[0::2]
+                        ys = poly[1::2]
+                        bbox = (min(xs), min(ys), max(xs), max(ys))
 
-                    # Calculate simplified BBox (default to 0 if not available)
-                    bbox = (0, 0, 0, 0)
-                    
-                    # Get Markdown representation
-                    try:
-                        table_md = table_element.export_to_markdown(doc)
-                    except TypeError:
-                        table_md = table_element.export_to_markdown()
+                    # Generate Markdown for this specific table
+                    table_md = azure_table_to_markdown(table)
 
                     result["tables"].append(ExtractedTable(
                         page_number=page_no,
-                        table_index=table_idx,
-                        row_count=len(data_rows) + 1,
-                        col_count=len(headers),
+                        table_index=i,
+                        row_count=table.row_count,
+                        col_count=table.column_count,
                         cells=cells,
                         bbox=bbox,
                         markdown=table_md,
                         header_external=False
                     ).to_dict())
                 except Exception as e:
-                    logger.warning(f"Error converting Docling table {table_idx}: {e}")
+                    logger.warning(f"Error converting Azure table {i}: {e}")
                     continue
 
     except Exception as e:
-        logger.error(f"Docling conversion failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Docling processing failed: {str(e)}")
+        logger.error(f"Azure analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Azure processing failed: {str(e)}")
 
     # Finalize Metadata
     result["metadata"]["total_pages"] = result["document_metadata"].get("page_count", 0)
@@ -1020,24 +957,18 @@ async def process_document(request: Request):
 def read_root():
     return {
         "status": "ok",
-        "message": "Enhanced Content Processing Engine (Docling Edition)",
-        "version": "3.0.0",
+        "message": "Enhanced Content Processing Engine (Azure Edition)",
+        "version": "3.1.0",
         "engines": {
-            "layout_and_text": "Docling (Microsoft Phi/ResNet)",
+            "layout_and_text": "Azure Document Intelligence (Prebuilt Layout)",
             "images_and_metadata": "PyMuPDF"
         },
         "processors_available": {
-            "docling": DOCLING_AVAILABLE,
+            "azure": AZURE_AVAILABLE,
             "docx": DOCX_AVAILABLE,
             "xlsx": OPENPYXL_AVAILABLE,
             "pptx": PPTX_AVAILABLE,
             "rtf": RTF_AVAILABLE,
-        },
-        "optimizations": {
-            "fast_backend_pypdfium2": USE_FAST_BACKEND,
-            "cpu_threads": DOCLING_NUM_THREADS,
-            "page_image_generation": False,
-            "picture_image_generation": False,
         }
     }
 
@@ -1045,19 +976,12 @@ def read_root():
 def health_check():
     return {
         "status": "healthy",
-        "docling_loaded": docling_converter is not None,
+        "azure_ready": AZURE_AVAILABLE and bool(AZURE_ENDPOINT) and bool(AZURE_KEY),
         "processors": {
-            "pdf": f"Docling {'Available' if DOCLING_AVAILABLE else 'Not Found'} + PyMuPDF",
-        },
-        "optimizations": {
-            "fast_backend": USE_FAST_BACKEND,
-            "threads": DOCLING_NUM_THREADS,
+            "pdf": f"Azure {'Available' if AZURE_AVAILABLE else 'Missing SDK'} + PyMuPDF",
         }
     }
 
 if __name__ == "__main__":
     import uvicorn
-    # Initialize Docling on startup to warm up models
-    if DOCLING_AVAILABLE:
-        get_docling_converter()
     uvicorn.run(app, host="0.0.0.0", port=8000)
