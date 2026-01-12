@@ -915,6 +915,33 @@
 					}
 				}
 			}
+			
+			// Check for PPTX artifacts in message content
+			if (message?.content) {
+				// Match <artifact type="pptx" ...>JSON</artifact>
+				const pptxArtifactRegex = /<artifact\s+type=["']pptx["'][^>]*>([\s\S]*?)<\/artifact>/gi;
+				let pptxMatch;
+				
+				while ((pptxMatch = pptxArtifactRegex.exec(message.content)) !== null) {
+					try {
+						const jsonContent = pptxMatch[1].trim();
+						const slideData = JSON.parse(jsonContent);
+						
+						if (slideData && slideData.slides) {
+							contents = [
+								...contents,
+								{
+									type: 'pptx',
+									title: slideData.title || 'Presentation',
+									slides: slideData.slides
+								}
+							];
+						}
+					} catch (e) {
+						console.error('Failed to parse PPTX artifact:', e);
+					}
+				}
+			}
 
 			// Check for Excel file artifacts
 			if (message?.files) {

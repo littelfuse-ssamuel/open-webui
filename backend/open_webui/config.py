@@ -924,6 +924,19 @@ AZURE_STORAGE_CONTAINER_NAME = os.environ.get("AZURE_STORAGE_CONTAINER_NAME", No
 AZURE_STORAGE_KEY = os.environ.get("AZURE_STORAGE_KEY", None)
 
 ####################################
+# PPTX GENERATION CONFIG
+####################################
+
+# Path to company PowerPoint template (optional)
+PPTX_TEMPLATE_PATH = os.environ.get("PPTX_TEMPLATE_PATH", "")
+
+# Temporary directory for generated PPTX files
+PPTX_TEMP_DIR = os.environ.get("PPTX_TEMP_DIR", "/tmp/pptx_files")
+
+# Time-to-live for generated files in seconds (default: 1 hour)
+PPTX_FILE_TTL = int(os.environ.get("PPTX_FILE_TTL", "3600"))
+
+####################################
 # File Upload DIR
 ####################################
 

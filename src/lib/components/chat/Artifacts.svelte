@@ -21,7 +21,8 @@
 	import ArrowLeft from '../icons/ArrowLeft.svelte';
 	import Download from '../icons/Download.svelte';
 	import ExcelViewer from '../artifacts/ExcelViewer.svelte';
-	import PresentationViewer from '../artifacts/PresentationViewer.svelte';
+	import PptxViewer from './PptxViewer.svelte';
+	import RevealViewer from '../artifacts/RevealViewer.svelte';
 	import fileSaver from 'file-saver';
 
 	const { saveAs } = fileSaver;
@@ -105,6 +106,13 @@
 
 	const downloadArtifact = async () => {
 		const content = contents[selectedContentIdx];
+
+		if (content.type === 'pptx') {
+			// PPTX artifacts are downloaded via the PptxViewer component
+			// which handles generation and download internally
+			toast.info('Use the Download button in the presentation viewer');
+			return;
+		}
 
 		if (content.type === 'excel') {
 			// For Excel artifacts, fetch the file and download
@@ -294,7 +302,9 @@
 						{:else if contents[selectedContentIdx].type === 'excel'}
 							<ExcelViewer file={contents[selectedContentIdx]} />
 						{:else if contents[selectedContentIdx].type === 'presentation'}
-							<PresentationViewer content={contents[selectedContentIdx].content} />
+							<RevealViewer content={contents[selectedContentIdx].content} />
+						{:else if contents[selectedContentIdx].type === 'pptx'}
+							<PptxViewer slideData={contents[selectedContentIdx]} />
 						{/if}
 					</div>
 				{:else}

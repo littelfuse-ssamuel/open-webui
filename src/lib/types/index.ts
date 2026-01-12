@@ -32,6 +32,32 @@ export type PresentationArtifact = {
 	content: string;
 };
 
+// PPTX artifact types for PowerPoint presentations
+export type PptxContentItem = {
+	type: 'text' | 'bullet' | 'table' | 'image';
+	text?: string;
+	items?: string[];
+	headers?: string[];
+	rows?: string[][];
+	src?: string;
+	alt?: string;
+};
+
+export type PptxSlide = {
+	title?: string;
+	backgroundColor?: string;
+	content?: PptxContentItem[];
+	notes?: string;
+};
+
+export type PptxArtifact = {
+	type: 'pptx';
+	title: string;
+	slides: PptxSlide[];
+	fileId?: string;
+	url?: string;
+};
+
 export type FileArtifact = {
 	type: 'image' | 'audio' | 'file' | 'excel' | 'presentation';
 	url: string;
