@@ -21,7 +21,7 @@
 	import ArrowLeft from '../icons/ArrowLeft.svelte';
 	import Download from '../icons/Download.svelte';
 	import ExcelViewer from '../artifacts/ExcelViewer.svelte';
-	import PptxViewer from './PptxViewer.svelte';
+	import PptxViewer from '../artifacts/PptxViewer.svelte';
 	import RevealViewer from '../artifacts/RevealViewer.svelte';
 	import fileSaver from 'file-saver';
 
