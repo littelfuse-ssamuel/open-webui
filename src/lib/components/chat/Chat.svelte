@@ -926,8 +926,8 @@
 					try {
 						let jsonContent = pptxMatch[1].trim();
 						// Remove wrapping code blocks if present
-						if (jsonContent.startsWith('```')) {
-							jsonContent = jsonContent.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+						if (jsonContent.startsWith('```') && jsonContent.endsWith('```')) {
+							jsonContent = jsonContent.replace(/^```(?:json)?\s*/m, '').replace(/\s*```$/m, '');
 						}
 						const slideData = JSON.parse(jsonContent);
 						
