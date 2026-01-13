@@ -963,6 +963,12 @@
 		});
 
 		artifactContents.set(contents);
+
+		// Auto-open artifact panel for PPTX artifacts (like Excel artifacts)
+		if (contents.some((c) => c.type === 'pptx') && !$mobile && !$showArtifacts) {
+			showArtifacts.set(true);
+			showControls.set(true);
+		}
 	};
 
 	//////////////////////////
