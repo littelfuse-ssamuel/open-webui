@@ -371,8 +371,32 @@
 					}
 				} else if (type === 'chat:message:delta' || type === 'message') {
 					message.content += data.content;
+
+					// Auto-open artifact panel for PPTX artifacts during streaming
+					if (
+						message.content?.includes('<artifact') &&
+						message.content?.includes('type="pptx"') &&
+						!$mobile &&
+						!$showArtifacts
+					) {
+						showArtifacts.set(true);
+						showControls.set(true);
+						getContents();
+					}
 				} else if (type === 'chat:message' || type === 'replace') {
 					message.content = data.content;
+
+					// Auto-open artifact panel for PPTX artifacts (like HTML and Excel artifacts)
+					if (
+						data.content?.includes('<artifact') &&
+						data.content?.includes('type="pptx"') &&
+						!$mobile
+					) {
+						showArtifacts.set(true);
+						showControls.set(true);
+						// Refresh artifact contents to include the new PPTX artifact
+						getContents();
+					}
 				} else if (type === 'chat:message:files' || type === 'files') {
 					message.files = data.files;
 
