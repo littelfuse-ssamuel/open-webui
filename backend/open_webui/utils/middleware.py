@@ -55,6 +55,7 @@ from open_webui.routers.pipelines import (
     process_pipeline_outlet_filter,
 )
 from open_webui.routers.memories import query_memory, QueryMemoryForm
+from open_webui.routers.pptx import create_pptx_file_record
 
 from open_webui.utils.webhook import post_webhook
 from open_webui.utils.files import (
@@ -3010,6 +3011,9 @@ async def process_chat_response(
                         # Initialize Excel artifacts list before try block
                         excel_artifacts = []
                         processed_excel_files = set()
+                        # Initialize PPTX artifacts list before try block
+                        pptx_artifacts = []
+                        processed_pptx_files = set()
                         try:
                             if content_blocks[-1]["attributes"].get("type") == "code":
                                 code = content_blocks[-1]["content"]
@@ -3152,6 +3156,36 @@ async def process_chat_response(
                                                             excel_artifacts.append(excel_artifact)
                                                             processed_excel_files.add(file_path)
                                                             # Don't modify the line to preserve user's message
+                                            elif '.pptx' in line:
+                                                # Try to extract PPTX file path from the line
+                                                pptx_pattern = r'(/[^\s]+\.pptx|[A-Za-z]:[^\s]+\.pptx)'
+                                                matches = re.findall(pptx_pattern, line)
+                                                for file_path in matches:
+                                                    if os.path.exists(file_path) and file_path not in processed_pptx_files:
+                                                        log.info(f"Detected PPTX file in stdout: {file_path}")
+                                                        
+                                                        # Read the PPTX file
+                                                        with open(file_path, 'rb') as f:
+                                                            pptx_bytes = f.read()
+                                                        
+                                                        # Create metadata
+                                                        pptx_metadata = {
+                                                            "slide_count": 0,  # Could be enhanced to extract actual slide count
+                                                            "generated": True,
+                                                        }
+                                                        
+                                                        # Upload using existing function
+                                                        pptx_artifact = create_pptx_file_record(
+                                                            request=request,
+                                                            pptx_bytes=pptx_bytes,
+                                                            filename=os.path.basename(file_path),
+                                                            user=user,
+                                                            metadata=pptx_metadata,
+                                                        )
+                                                        
+                                                        if pptx_artifact:
+                                                            pptx_artifacts.append(pptx_artifact)
+                                                            processed_pptx_files.add(file_path)
 
                                         output["stdout"] = "\n".join(stdoutLines)
 
@@ -3224,6 +3258,37 @@ async def process_chat_response(
                                                             excel_artifacts.append(excel_artifact)
                                                             processed_excel_files.add(file_path)
                                                 idx += 1
+                                            elif '.pptx' in line:
+                                                # Try to extract PPTX file path from the line
+                                                pptx_pattern = r'(/[^\s]+\.pptx|[A-Za-z]:[^\s]+\.pptx)'
+                                                matches = re.findall(pptx_pattern, line)
+                                                for file_path in matches:
+                                                    if os.path.exists(file_path) and file_path not in processed_pptx_files:
+                                                        log.info(f"Detected PPTX file in result: {file_path}")
+                                                        
+                                                        # Read the PPTX file
+                                                        with open(file_path, 'rb') as f:
+                                                            pptx_bytes = f.read()
+                                                        
+                                                        # Create metadata
+                                                        pptx_metadata = {
+                                                            "slide_count": 0,
+                                                            "generated": True,
+                                                        }
+                                                        
+                                                        # Upload using existing function
+                                                        pptx_artifact = create_pptx_file_record(
+                                                            request=request,
+                                                            pptx_bytes=pptx_bytes,
+                                                            filename=os.path.basename(file_path),
+                                                            user=user,
+                                                            metadata=pptx_metadata,
+                                                        )
+                                                        
+                                                        if pptx_artifact:
+                                                            pptx_artifacts.append(pptx_artifact)
+                                                            processed_pptx_files.add(file_path)
+                                                idx += 1
                                             else:
                                                 idx += 1
                                         output["result"] = "\n".join(resultLines)
@@ -3256,6 +3321,18 @@ async def process_chat_response(
                                     "type": "files",
                                     "data": {
                                         "files": excel_artifacts,
+                                    },
+                                }
+                            )
+
+                        # Emit PPTX file artifacts if any were created
+                        if pptx_artifacts:
+                            log.info(f"Emitting {len(pptx_artifacts)} PPTX file artifacts")
+                            await event_emitter(
+                                {
+                                    "type": "files",
+                                    "data": {
+                                        "files": pptx_artifacts,
                                     },
                                 }
                             )
