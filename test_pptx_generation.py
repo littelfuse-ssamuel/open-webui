@@ -67,7 +67,7 @@ def create_sample_pptx():
     txBox = slide.shapes.add_textbox(left, top, width, height)
     tf = txBox.text_frame
     tf.text = "Sales Data"
-    p = tf.text_frame.paragraphs[0]
+    p = tf.paragraphs[0]
     p.font.size = Pt(32)
     p.font.bold = True
     
