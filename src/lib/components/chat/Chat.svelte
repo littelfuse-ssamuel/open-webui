@@ -919,12 +919,16 @@
 			// Check for PPTX artifacts in message content
 			if (message?.content) {
 				// Match <artifact type="pptx" ...>JSON</artifact>
-				const pptxArtifactRegex = /<artifact\s+type=["']pptx["'][^>]*>([\s\S]*?)<\/artifact>/gi;
+				const pptxArtifactRegex = /<artifact\s+(?:[^>]*?\s+)?type=["']pptx["'][^>]*>([\s\S]*?)<\/artifact>/gi;
 				let pptxMatch;
 				
 				while ((pptxMatch = pptxArtifactRegex.exec(message.content)) !== null) {
 					try {
-						const jsonContent = pptxMatch[1].trim();
+						let jsonContent = pptxMatch[1].trim();
+						// Remove wrapping code blocks if present
+						if (jsonContent.startsWith('```') && jsonContent.endsWith('```')) {
+							jsonContent = jsonContent.replace(/^```(?:json)?\s*/m, '').replace(/\s*```$/m, '');
+						}
 						const slideData = JSON.parse(jsonContent);
 						
 						if (slideData && slideData.slides) {
