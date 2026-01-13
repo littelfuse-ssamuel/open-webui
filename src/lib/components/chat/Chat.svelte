@@ -2639,6 +2639,11 @@
 												showControls.set(true);
 											}
 										}}
+										on:openPptxArtifact={(e) => {
+											getContents();
+											showArtifacts.set(true);
+											showControls.set(true);
+										}}
 									/>
 								</div>
 							</div>

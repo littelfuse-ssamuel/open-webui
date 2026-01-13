@@ -799,6 +799,29 @@
 									</div>
 								{/if}
 
+								<!-- PPTX artifact attachments -->
+								{#if message?.content?.includes('<artifact') && message?.content?.includes('type="pptx"')}
+									<div class="pptx-attachments mt-2 flex flex-wrap gap-2">
+										<button
+											class="pptx-attachment-btn flex items-center gap-2 px-3 py-2 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg hover:bg-orange-100 dark:hover:bg-orange-900/40 transition-colors"
+											on:click={() => {
+												// Open artifacts panel with this PPTX
+												dispatch('openPptxArtifact', {});
+											}}
+											title="Click to view presentation"
+										>
+											<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-orange-600 dark:text-orange-400">
+												<path d="M2 3h20v18H2z"/>
+												<path d="M2 7h20"/>
+												<path d="M6 3v4"/>
+											</svg>
+											<span class="text-sm font-medium text-orange-700 dark:text-orange-300">
+												View Presentation
+											</span>
+										</button>
+									</div>
+								{/if}
+
 								{#if (message?.sources || message?.citations) && (model?.info?.meta?.capabilities?.citations ?? true)}
 									<Citations
 										bind:this={citationsElement}

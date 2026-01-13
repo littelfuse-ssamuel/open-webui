@@ -286,7 +286,7 @@
 			<div class=" absolute top-0 left-0 right-0 bottom-0 z-10"></div>
 		{/if}
 
-		<div class="flex-1 w-full h-full">
+		<div class="flex-1 w-full h-full pointer-events-auto">
 			<div class=" h-full flex flex-col">
 				{#if contents.length > 0}
 					<div class="max-w-full w-full h-full">
