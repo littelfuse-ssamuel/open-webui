@@ -3168,10 +3168,10 @@ async def process_chat_response(
                                                         with open(file_path, 'rb') as f:
                                                             pptx_bytes = f.read()
                                                         
-                                                        # Create metadata
+                                                        # Create metadata (consistent with Excel pattern)
                                                         pptx_metadata = {
-                                                            "slide_count": 0,  # Could be enhanced to extract actual slide count
-                                                            "generated": True,
+                                                            "name": os.path.basename(file_path),
+                                                            "content_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
                                                         }
                                                         
                                                         # Upload using existing function
@@ -3270,10 +3270,10 @@ async def process_chat_response(
                                                         with open(file_path, 'rb') as f:
                                                             pptx_bytes = f.read()
                                                         
-                                                        # Create metadata
+                                                        # Create metadata (consistent with Excel pattern)
                                                         pptx_metadata = {
-                                                            "slide_count": 0,
-                                                            "generated": True,
+                                                            "name": os.path.basename(file_path),
+                                                            "content_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
                                                         }
                                                         
                                                         # Upload using existing function
