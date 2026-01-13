@@ -94,6 +94,15 @@
 			return;
 		}
 
+		// For PPTX, fullscreen is handled by the PptxViewer component
+		if (content?.type === 'pptx') {
+			const pptxContainer = document.querySelector('.pptx-viewer-wrapper');
+			if (pptxContainer?.requestFullscreen) {
+				pptxContainer.requestFullscreen();
+			}
+			return;
+		}
+
 		// For iframe content
 		if (iframeElement?.requestFullscreen) {
 			iframeElement.requestFullscreen();
@@ -247,7 +256,7 @@
 							</button>
 						</Tooltip>
 
-						{#if contents[selectedContentIdx].type === 'iframe' || contents[selectedContentIdx].type === 'excel' || contents[selectedContentIdx].type === 'presentation'}
+						{#if contents[selectedContentIdx].type === 'iframe' || contents[selectedContentIdx].type === 'excel' || contents[selectedContentIdx].type === 'presentation' || contents[selectedContentIdx].type === 'pptx'}
 							<Tooltip content={$i18n.t('Open in full screen')}>
 								<button
 									class=" bg-none border-none text-xs bg-gray-50 hover:bg-gray-100 dark:bg-gray-850 dark:hover:bg-gray-800 transition rounded-md p-0.5"
