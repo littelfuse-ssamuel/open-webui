@@ -379,6 +379,8 @@
 						!$mobile &&
 						!$showArtifacts
 					) {
+						console.log('[PPTX] Detected PPTX artifact in streaming content, opening artifacts panel');
+						await tick();
 						showArtifacts.set(true);
 						showControls.set(true);
 						getContents();
@@ -392,6 +394,8 @@
 						data.content?.includes('type="pptx"') &&
 						!$mobile
 					) {
+						console.log('[PPTX] Detected PPTX artifact in message replace, opening artifacts panel');
+						await tick();
 						showArtifacts.set(true);
 						showControls.set(true);
 						// Refresh artifact contents to include the new PPTX artifact
@@ -945,17 +949,19 @@
 				// Match <artifact type="pptx" ...>JSON</artifact>
 				const pptxArtifactRegex = /<artifact\s+(?:[^>]*?\s+)?type=["']pptx["'][^>]*>([\s\S]*?)<\/artifact>/gi;
 				let pptxMatch;
-				
+
 				while ((pptxMatch = pptxArtifactRegex.exec(message.content)) !== null) {
 					try {
 						let jsonContent = pptxMatch[1].trim();
+						console.log('[PPTX] Found PPTX artifact, parsing JSON...');
 						// Remove wrapping code blocks if present
 						if (jsonContent.startsWith('```') && jsonContent.endsWith('```')) {
 							jsonContent = jsonContent.replace(/^```(?:json)?\s*/m, '').replace(/\s*```$/m, '');
 						}
 						const slideData = JSON.parse(jsonContent);
-						
+
 						if (slideData && slideData.slides) {
+							console.log('[PPTX] Successfully parsed PPTX artifact with', slideData.slides.length, 'slides');
 							contents = [
 								...contents,
 								{
@@ -966,7 +972,7 @@
 							];
 						}
 					} catch (e) {
-						console.error('Failed to parse PPTX artifact:', e);
+						console.error('[PPTX] Failed to parse PPTX artifact:', e);
 					}
 				}
 			}
