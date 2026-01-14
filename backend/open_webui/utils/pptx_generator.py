@@ -197,15 +197,135 @@ def format_cell(cell, bold: bool = False, bg_color: Optional[str] = None, font_s
 # Content Addition Functions
 # ================================
 
-def add_content_to_slide(slide, content_items: List[Dict[str, Any]], prs: Presentation):
-    """Add various content types to a slide with markdown support."""
-    # Starting position for content (below title area)
-    top = Inches(1.8)
+def find_content_placeholder(slide, placeholder_idx: int = None):
+    """
+    Find a content placeholder in the slide by index.
+    
+    Args:
+        slide: Slide object
+        placeholder_idx: Specific placeholder index to find (1 for OBJECT, 10 for BODY)
+        
+    Returns:
+        Placeholder shape or None if not found
+    """
+    for shape in slide.shapes:
+        if hasattr(shape, 'is_placeholder') and shape.is_placeholder:
+            if placeholder_idx is not None:
+                if shape.placeholder_format.idx == placeholder_idx:
+                    return shape
+            else:
+                # Return first non-title placeholder (OBJECT or BODY type)
+                ph_type = shape.placeholder_format.type
+                # Type 7 = OBJECT, Type 2 = BODY
+                if ph_type in [2, 7]:
+                    return shape
+    return None
+
+
+def add_content_to_placeholder(placeholder, content_items: List[Dict[str, Any]], is_body_placeholder: bool = False):
+    """
+    Add text/bullet content directly to a placeholder shape.
+    
+    Args:
+        placeholder: Placeholder shape to populate
+        content_items: List of content items (only text and bullet supported)
+        is_body_placeholder: True if this is a BODY placeholder (idx=10) for title slides
+    """
+    text_frame = placeholder.text_frame
+    text_frame.word_wrap = True
+    
+    # Clear any existing placeholder text
+    for para in list(text_frame.paragraphs):
+        para.clear()
+    
+    first_paragraph = True
+    base_font_size = 14 if is_body_placeholder else 16
+    
+    for item in content_items:
+        item_type = item.get('type', '')
+        
+        if item_type == 'text':
+            text = item.get('text', '')
+            if first_paragraph:
+                p = text_frame.paragraphs[0]
+                first_paragraph = False
+            else:
+                p = text_frame.add_paragraph()
+            
+            apply_formatted_runs(p, text, base_size=base_font_size)
+            p.space_after = Pt(6)
+        
+        elif item_type == 'bullet':
+            items = item.get('items', [])
+            for bullet_text in items:
+                if first_paragraph:
+                    p = text_frame.paragraphs[0]
+                    first_paragraph = False
+                else:
+                    p = text_frame.add_paragraph()
+                
+                p.level = 0
+                apply_formatted_runs(p, bullet_text, base_size=base_font_size)
+                p.space_after = Pt(6)
+                
+                # Add bullet character via low-level XML
+                from pptx.oxml.ns import qn
+                from lxml import etree
+                
+                pPr = p._p.get_or_add_pPr()
+                # Remove any existing bullet settings
+                for child in pPr.findall(qn('a:buNone')):
+                    pPr.remove(child)
+                # Add bullet character element
+                buChar = etree.SubElement(pPr, qn('a:buChar'))
+                buChar.set('char', '•')
+
+
+def add_content_to_slide(slide, content_items: List[Dict[str, Any]], prs: Presentation, content_placeholder=None, layout_index: int = None):
+    """
+    Add various content types to a slide with markdown support.
+    
+    Args:
+        slide: Slide object
+        content_items: List of content dictionaries
+        prs: Presentation object
+        content_placeholder: Optional placeholder shape to use for text/bullet content
+        layout_index: Layout index being used (for position calculations)
+    """
+    # Separate content by type - text/bullets can go in placeholder, tables/images need shapes
+    text_bullet_content = [item for item in content_items if item.get('type') in ['text', 'bullet']]
+    other_content = [item for item in content_items if item.get('type') not in ['text', 'bullet']]
+    
+    # If we have a content placeholder and text/bullet content, use the placeholder
+    placeholder_used = False
+    if content_placeholder is not None and text_bullet_content:
+        try:
+            # Check if this is a BODY placeholder (title slide) vs OBJECT placeholder (content slide)
+            is_body = content_placeholder.placeholder_format.type == 2  # BODY type
+            add_content_to_placeholder(content_placeholder, text_bullet_content, is_body_placeholder=is_body)
+            placeholder_used = True
+            log.debug(f"Added {len(text_bullet_content)} items to content placeholder")
+        except Exception as e:
+            log.warning(f"Failed to use placeholder, falling back to textbox: {e}")
+            placeholder_used = False
+    
+    # Calculate starting position for additional content
+    if placeholder_used and content_placeholder is not None:
+        # Start below the placeholder
+        top = content_placeholder.top + content_placeholder.height + Inches(0.2)
+    elif layout_index == 4:  # NDA LFUS Title Only - no content placeholder
+        top = Inches(1.0)  # Start closer to title for title-only layouts
+    else:
+        top = Inches(1.8)  # Default fallback
+    
     left = Inches(0.75)
     width = Inches(8.5)
     slide_height = prs.slide_height
     
-    for item in content_items:
+    # Add text/bullet content as textboxes if placeholder wasn't used
+    items_to_process = content_items if not placeholder_used else other_content
+    
+    for item in items_to_process:
         item_type = item.get('type', '')
         
         if item_type == 'text':
@@ -453,9 +573,24 @@ def create_slide(prs: Presentation, slide_info: Dict[str, Any], slide_index: int
             title_frame.text = clean_title
             format_text_frame(title_frame, size=32, bold=True)
     
-    # Add content
+    # Add content - find appropriate placeholder based on layout
     if content:
-        add_content_to_slide(slide, content, prs)
+        content_placeholder = None
+        
+        # For title slide (layout 0), use BODY placeholder (idx=10)
+        if layout_index == 0:
+            content_placeholder = find_content_placeholder(slide, placeholder_idx=10)
+        # For content layouts (1, 3, 10, 13), use OBJECT placeholder (idx=1)
+        elif layout_index in [1, 3, 10, 13]:
+            content_placeholder = find_content_placeholder(slide, placeholder_idx=1)
+        # For other layouts, try to find any content placeholder
+        else:
+            content_placeholder = find_content_placeholder(slide)
+        
+        if content_placeholder:
+            log.debug(f"Found content placeholder idx={content_placeholder.placeholder_format.idx} for layout {layout_index}")
+        
+        add_content_to_slide(slide, content, prs, content_placeholder=content_placeholder, layout_index=layout_index)
     
     # Add speaker notes with markdown stripped
     if notes:
