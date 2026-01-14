@@ -1,27 +1,19 @@
 # syntax=docker/dockerfile:1
 # Initialize device type args
-# use build args in the docker build command with --build-arg="BUILDARG=true"
 ARG USE_CUDA=false
 ARG USE_OLLAMA=false
 ARG USE_SLIM=false
 ARG USE_PERMISSION_HARDENING=false
-# Tested with cu117 for CUDA 11 and cu121 for CUDA 12 (default)
 ARG USE_CUDA_VER=cu128
 # any sentence transformer model;
 # models to use can be found at https://huggingface.co/models?library=sentence-transformers
-# Leaderboard: https://huggingface.co/spaces/mteb/leaderboard 
-# for better performance and multilangauge support use "intfloat/multilingual-e5-large" (~2.5GB) or "intfloat/multilingual-e5-base" (~1.5GB)
-# IMPORTANT: If you change the embedding model (sentence-transformers/all-MiniLM-L6-v2) and vice versa, you aren't able to use RAG Chat with your previous documents loaded in the WebUI!
-# You need to re-embed them.
 ARG USE_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ARG USE_RERANKING_MODEL=""
 
 # Tiktoken encoding name;
-# models to use can be found at https://huggingface.co/models?library=tiktoken
 ARG USE_TIKTOKEN_ENCODING_NAME="cl100k_base"
 
 ARG BUILD_HASH=dev-build
-# Override at your own risk - non-root configurations are untested
 ARG UID=0
 ARG GID=0
 
@@ -29,12 +21,8 @@ ARG GID=0
 FROM --platform=$BUILDPLATFORM node:22-bookworm AS build
 ARG BUILD_HASH
 
-# Set Node.js options (heap limit Allocation failed - JavaScript heap out of memory)
-# ENV NODE_OPTIONS="--max-old-space-size=4096"
-
 WORKDIR /app
 
-# to store git revision in build
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
@@ -42,11 +30,13 @@ RUN --mount=type=cache,target=/root/.npm \
     npm install --legacy-peer-deps
 
 # --- OPTIMIZATION START ---
-# Only copy frontend-specific files to avoid cache invalidation by backend changes
+# 1. Copy Source Code
 COPY src ./src
 COPY static ./static
-# Copy config files required for the build
-COPY svelte.config.js vite.config.ts tsconfig.json tailwind.config.js postcss.config.js ./
+# 2. Copy Scripts (CRITICAL: Required for 'prepare-pyodide.js')
+COPY scripts ./scripts
+# 3. Copy Config Files
+COPY svelte.config.js vite.config.ts tsconfig.json tailwind.config.js postcss.config.js pyproject.toml ./
 # --- OPTIMIZATION END ---
 
 ENV APP_BUILD_HASH=${BUILD_HASH}
@@ -55,7 +45,6 @@ RUN npm run build
 ######## WebUI backend ########
 FROM python:3.11-slim-bookworm AS base
 
-# Use args
 ARG USE_CUDA
 ARG USE_OLLAMA
 ARG USE_CUDA_VER
@@ -70,7 +59,6 @@ ARG GID
 ## Basis ##
 ENV ENV=prod \
     PORT=8080 \
-    # pass build args to the build
     USE_OLLAMA_DOCKER=${USE_OLLAMA} \
     USE_CUDA_DOCKER=${USE_CUDA} \
     USE_SLIM_DOCKER=${USE_SLIM} \
@@ -105,11 +93,6 @@ ENV TIKTOKEN_ENCODING_NAME="$USE_TIKTOKEN_ENCODING_NAME" \
 
 ## Hugging Face download cache ##
 ENV HF_HOME="/app/backend/data/cache/embedding/models"
-
-## Torch Extensions ##
-# ENV TORCH_EXTENSIONS_DIR="/.cache/torch_extensions"
-
-#### Other models ##########################################################
 
 WORKDIR /app/backend
 
@@ -168,14 +151,10 @@ RUN if [ "$USE_OLLAMA" = "true" ] && [ "$USE_SLIM" != "true" ]; then \
     curl -fsSL https://ollama.com/install.sh | sh; \
     fi
 
-# copy embedding weight from build
-# RUN mkdir -p /root/.cache/chroma/onnx_models/all-MiniLM-L6-v2
-# COPY --from=build /app/onnx /root/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx
-
 # copy built frontend files
 COPY --chown=$UID:$GID --from=build /app/build /app/build
 # CHANGELOG might not exist if we didn't copy root, check if it's critical or copy it specifically
-# COPY --chown=$UID:$GID --from=build /app/CHANGELOG.md /app/CHANGELOG.md
+# COPY --chown=$UID:$GID --from=build /app/CHANGELOG.md /app/CHANGELOG.md 
 COPY --chown=$UID:$GID --from=build /app/package.json /app/package.json
 
 # copy backend files
@@ -184,9 +163,7 @@ EXPOSE 8080
 
 HEALTHCHECK CMD curl --silent --fail http://localhost:${PORT:-8080}/health | jq -ne 'input.status == true' || exit 1
 
-# Minimal, atomic permission hardening for OpenShift (arbitrary UID):
-# - Group 0 owns /app and /root
-# - Directories are group-writable and have SGID so new files inherit GID 0
+# Permission hardening
 RUN if [ "$USE_PERMISSION_HARDENING" = "true" ]; then \
     set -eux; \
     chgrp -R 0 /app /root || true; \
