@@ -22,7 +22,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Fetch full history for better change detection
+          fetch-depth: 0
 
       - uses: dorny/paths-filter@v3
         id: changes
@@ -145,10 +145,11 @@ jobs:
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-        cache-from: |
-          type=registry,ref=ghcr.io/${{ github.repository }}-lf:buildcache
-        cache-to: |
-          type=registry,ref=ghcr.io/${{ github.repository }}-lf:buildcache,mode=max
+        # --- OPTIMIZATION START ---
+        # Changed to GitHub Actions Cache (type=gha) for faster local caching
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        # --- OPTIMIZATION END ---
         platforms: linux/amd64
         build-args: |
           BUILD_HASH=${{ github.sha }}
@@ -199,10 +200,9 @@ jobs:
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-        cache-from: |
-          type=registry,ref=ghcr.io/${{ github.repository }}-extloader:buildcache
-        cache-to: |
-          type=registry,ref=ghcr.io/${{ github.repository }}-extloader:buildcache,mode=max
+        # Applied the same optimization here
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
         platforms: linux/amd64
         build-args: |
           BUILD_HASH=${{ github.sha }}
@@ -253,10 +253,9 @@ jobs:
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-        cache-from: |
-          type=registry,ref=ghcr.io/${{ github.repository }}-jupyter-kernel:buildcache
-        cache-to: |
-          type=registry,ref=ghcr.io/${{ github.repository }}-jupyter-kernel:buildcache,mode=max
+        # Applied the same optimization here
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
         platforms: linux/amd64
         build-args: |
           BUILD_HASH=${{ github.sha }}
@@ -264,7 +263,6 @@ jobs:
 
   create-release:
     needs: [build-wheel, build-open-webui, build-extloader, build-jupyter-kernel]
-    # Only run if at least one of the build jobs ran (using always() to check even if they were skipped)
     if: always() && (needs.build-open-webui.result == 'success' || needs.build-extloader.result == 'success' || needs.build-jupyter-kernel.result == 'success' || needs.build-open-webui.result == 'skipped' || needs.build-extloader.result == 'skipped' || needs.build-jupyter-kernel.result == 'skipped') && startsWith(github.ref, 'refs/tags/lf-v')
     runs-on: ubuntu-latest
     
