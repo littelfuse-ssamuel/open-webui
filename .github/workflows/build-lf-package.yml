@@ -146,9 +146,9 @@ jobs:
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         # --- OPTIMIZATION START ---
-        # Changed to GitHub Actions Cache (type=gha) for faster local caching
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        # Using registry cache for reliability (stored in GHCR)
+        cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-lf:buildcache
+        cache-to: type=registry,ref=ghcr.io/${{ github.repository }}-lf:buildcache,mode=max
         # --- OPTIMIZATION END ---
         platforms: linux/amd64
         build-args: |
@@ -200,9 +200,9 @@ jobs:
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-        # Applied the same optimization here
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        # Using registry cache for reliability (stored in GHCR)
+        cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-extloader:buildcache
+        cache-to: type=registry,ref=ghcr.io/${{ github.repository }}-extloader:buildcache,mode=max
         platforms: linux/amd64
         build-args: |
           BUILD_HASH=${{ github.sha }}
@@ -253,9 +253,9 @@ jobs:
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-        # Applied the same optimization here
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        # Using registry cache for reliability (stored in GHCR)
+        cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-jupyter-kernel:buildcache
+        cache-to: type=registry,ref=ghcr.io/${{ github.repository }}-jupyter-kernel:buildcache,mode=max
         platforms: linux/amd64
         build-args: |
           BUILD_HASH=${{ github.sha }}
