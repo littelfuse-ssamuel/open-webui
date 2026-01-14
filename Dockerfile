@@ -6,7 +6,6 @@ ARG USE_SLIM=false
 ARG USE_PERMISSION_HARDENING=false
 ARG USE_CUDA_VER=cu128
 # any sentence transformer model;
-# models to use can be found at https://huggingface.co/models?library=sentence-transformers
 ARG USE_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ARG USE_RERANKING_MODEL=""
 
@@ -33,7 +32,7 @@ RUN --mount=type=cache,target=/root/.npm \
 # 1. Copy Source Code
 COPY src ./src
 COPY static ./static
-# 2. Copy Scripts (CRITICAL: Required for 'prepare-pyodide.js')
+# 2. Copy Scripts (Required for 'prepare-pyodide.js')
 COPY scripts ./scripts
 # 3. Copy Config Files
 COPY svelte.config.js vite.config.ts tsconfig.json tailwind.config.js postcss.config.js pyproject.toml ./
@@ -153,9 +152,12 @@ RUN if [ "$USE_OLLAMA" = "true" ] && [ "$USE_SLIM" != "true" ]; then \
 
 # copy built frontend files
 COPY --chown=$UID:$GID --from=build /app/build /app/build
-# CHANGELOG might not exist if we didn't copy root, check if it's critical or copy it specifically
-# COPY --chown=$UID:$GID --from=build /app/CHANGELOG.md /app/CHANGELOG.md 
 COPY --chown=$UID:$GID --from=build /app/package.json /app/package.json
+
+# --- CRITICAL FIX START ---
+# Copy CHANGELOG.md directly from context to the location Python expects
+COPY --chown=$UID:$GID CHANGELOG.md /app/CHANGELOG.md
+# --- CRITICAL FIX END ---
 
 # copy backend files
 COPY --chown=$UID:$GID ./backend .
