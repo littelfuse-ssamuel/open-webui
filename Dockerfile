@@ -7,14 +7,17 @@ ARG USE_SLIM=false
 ARG USE_PERMISSION_HARDENING=false
 # Tested with cu117 for CUDA 11 and cu121 for CUDA 12 (default)
 ARG USE_CUDA_VER=cu128
-# any sentence transformer model; models to use can be found at https://huggingface.co/models?library=sentence-transformers
+# any sentence transformer model;
+# models to use can be found at https://huggingface.co/models?library=sentence-transformers
 # Leaderboard: https://huggingface.co/spaces/mteb/leaderboard 
 # for better performance and multilangauge support use "intfloat/multilingual-e5-large" (~2.5GB) or "intfloat/multilingual-e5-base" (~1.5GB)
-# IMPORTANT: If you change the embedding model (sentence-transformers/all-MiniLM-L6-v2) and vice versa, you aren't able to use RAG Chat with your previous documents loaded in the WebUI! You need to re-embed them.
+# IMPORTANT: If you change the embedding model (sentence-transformers/all-MiniLM-L6-v2) and vice versa, you aren't able to use RAG Chat with your previous documents loaded in the WebUI!
+# You need to re-embed them.
 ARG USE_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ARG USE_RERANKING_MODEL=""
 
-# Tiktoken encoding name; models to use can be found at https://huggingface.co/models?library=tiktoken
+# Tiktoken encoding name;
+# models to use can be found at https://huggingface.co/models?library=tiktoken
 ARG USE_TIKTOKEN_ENCODING_NAME="cl100k_base"
 
 ARG BUILD_HASH=dev-build
@@ -29,15 +32,15 @@ ARG BUILD_HASH
 # Set Node.js options (heap limit Allocation failed - JavaScript heap out of memory)
 # ENV NODE_OPTIONS="--max-old-space-size=4096"
 
-# Set Node.js options (heap limit Allocation failed - JavaScript heap out of memory)
-# ENV NODE_OPTIONS="--max-old-space-size=4096"
-
 WORKDIR /app
 
 # to store git revision in build
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm install --legacy-peer-deps
+
 # --- OPTIMIZATION START ---
 # Only copy frontend-specific files to avoid cache invalidation by backend changes
 COPY src ./src
@@ -46,9 +49,6 @@ COPY static ./static
 COPY svelte.config.js vite.config.ts tsconfig.json tailwind.config.js postcss.config.js ./
 # --- OPTIMIZATION END ---
 
-    npm install --legacy-peer-deps
-
-COPY . .
 ENV APP_BUILD_HASH=${BUILD_HASH}
 RUN npm run build
 
@@ -104,7 +104,7 @@ ENV TIKTOKEN_ENCODING_NAME="$USE_TIKTOKEN_ENCODING_NAME" \
     TIKTOKEN_CACHE_DIR="/app/backend/data/cache/tiktoken"
 
 ## Hugging Face download cache ##
-#ENV HF_HOME="/app/backend/data/cache/embedding/models"
+ENV HF_HOME="/app/backend/data/cache/embedding/models"
 
 ## Torch Extensions ##
 # ENV TORCH_EXTENSIONS_DIR="/.cache/torch_extensions"
@@ -155,9 +155,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os.environ['RAG_EMBEDDING_MODEL'], device='cpu')" && \
         python -c "import os; from faster_whisper import WhisperModel; WhisperModel(os.environ['WHISPER_MODEL'], device='cpu', compute_type='int8', download_root=os.environ['WHISPER_MODEL_DIR'])" && \
         python -c "import os; import tiktoken; tiktoken.get_encoding(os.environ['TIKTOKEN_ENCODING_NAME'])"; \
-    rm -rf /var/lib/apt/lists/*; \
-    # Install Ollama if requested
-    if [ "$USE_OLLAMA" = "true" ] && [ "$USE_SLIM" != "true" ]; then \
+      fi; \
+    fi; \
+    mkdir -p /app/backend/data && chown -R $UID:$GID /app/backend/data/ && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install Ollama if requested
 RUN if [ "$USE_OLLAMA" = "true" ] && [ "$USE_SLIM" != "true" ]; then \
@@ -170,16 +171,15 @@ RUN if [ "$USE_OLLAMA" = "true" ] && [ "$USE_SLIM" != "true" ]; then \
 # copy embedding weight from build
 # RUN mkdir -p /root/.cache/chroma/onnx_models/all-MiniLM-L6-v2
 # COPY --from=build /app/onnx /root/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx
-# CHANGELOG might not exist if we didn't copy root, check if it's critical or copy it specifically
-# COPY --chown=$UID:$GID --from=build /app/CHANGELOG.md /app/CHANGELOG.md 
+
 # copy built frontend files
 COPY --chown=$UID:$GID --from=build /app/build /app/build
-COPY --chown=$UID:$GID --from=build /app/CHANGELOG.md /app/CHANGELOG.md
+# CHANGELOG might not exist if we didn't copy root, check if it's critical or copy it specifically
+# COPY --chown=$UID:$GID --from=build /app/CHANGELOG.md /app/CHANGELOG.md
 COPY --chown=$UID:$GID --from=build /app/package.json /app/package.json
 
 # copy backend files
 COPY --chown=$UID:$GID ./backend .
-
 EXPOSE 8080
 
 HEALTHCHECK CMD curl --silent --fail http://localhost:${PORT:-8080}/health | jq -ne 'input.status == true' || exit 1
@@ -199,5 +199,6 @@ USER $UID:$GID
 
 ARG BUILD_HASH
 ENV WEBUI_BUILD_VERSION=${BUILD_HASH}
+ENV DOCKER=true
 
 CMD [ "bash", "start.sh"]
