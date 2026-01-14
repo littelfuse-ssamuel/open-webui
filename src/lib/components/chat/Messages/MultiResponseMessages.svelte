@@ -326,6 +326,7 @@
 									{readOnly}
 									{topPadding}
 									on:openExcelArtifact
+									on:openPptxArtifact
 								/>
 							{/if}
 						{/key}
@@ -384,6 +385,7 @@
 										{editCodeBlock}
 										{topPadding}
 										on:openExcelArtifact
+										on:openPptxArtifact
 									/>
 								{/if}
 							{/key}

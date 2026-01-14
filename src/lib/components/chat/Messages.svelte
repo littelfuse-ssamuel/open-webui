@@ -451,6 +451,7 @@
 								{editCodeBlock}
 								{topPadding}
 								on:openExcelArtifact
+								on:openPptxArtifact
 							/>
 						{/each}
 					</ul>

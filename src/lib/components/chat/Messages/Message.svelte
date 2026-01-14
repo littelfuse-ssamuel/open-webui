@@ -82,6 +82,7 @@
 				isLastMessage={messageId === history.currentId}
 				siblings={history.messages[history.messages[messageId].parentId]?.childrenIds ?? []}
 				on:openExcelArtifact
+				on:openPptxArtifact
 				{setInputText}
 				{gotoMessage}
 				{showPreviousMessage}
@@ -123,6 +124,8 @@
 				{readOnly}
 				{editCodeBlock}
 				{topPadding}
+				on:openExcelArtifact
+				on:openPptxArtifact
 			/>
 		{/if}
 	{/if}
