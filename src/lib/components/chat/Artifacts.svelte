@@ -20,6 +20,12 @@
 	import SvgPanZoom from '../common/SVGPanZoom.svelte';
 	import ArrowLeft from '../icons/ArrowLeft.svelte';
 	import Download from '../icons/Download.svelte';
+	import ExcelViewer from '../artifacts/ExcelViewer.svelte';
+	import PptxViewer from '../artifacts/PptxViewer.svelte';
+	import RevealViewer from '../artifacts/RevealViewer.svelte';
+	import fileSaver from 'file-saver';
+
+	const { saveAs } = fileSaver;
 
 	export let overlay = false;
 
@@ -68,25 +74,79 @@
 	};
 
 	const showFullScreen = () => {
-		if (iframeElement.requestFullscreen) {
+		const content = contents[selectedContentIdx];
+
+		// For Excel, fullscreen is handled by the ExcelViewer component itself
+		if (content?.type === 'excel') {
+			const excelContainer = document.querySelector('.excel-viewer-wrapper');
+			if (excelContainer?.requestFullscreen) {
+				excelContainer.requestFullscreen();
+			}
+			return;
+		}
+
+		// For Presentation, fullscreen is handled by the PresentationViewer component
+		if (content?.type === 'presentation') {
+			const presentationContainer = document.querySelector('.presentation-viewer-wrapper');
+			if (presentationContainer?.requestFullscreen) {
+				presentationContainer.requestFullscreen();
+			}
+			return;
+		}
+
+		// For PPTX, fullscreen is handled by the PptxViewer component
+		if (content?.type === 'pptx') {
+			const pptxContainer = document.querySelector('.pptx-viewer-wrapper');
+			if (pptxContainer?.requestFullscreen) {
+				pptxContainer.requestFullscreen();
+			}
+			return;
+		}
+
+		// For iframe content
+		if (iframeElement?.requestFullscreen) {
 			iframeElement.requestFullscreen();
-		} else if (iframeElement.webkitRequestFullscreen) {
+		} else if (iframeElement?.webkitRequestFullscreen) {
 			iframeElement.webkitRequestFullscreen();
-		} else if (iframeElement.msRequestFullscreen) {
+		} else if (iframeElement?.msRequestFullscreen) {
 			iframeElement.msRequestFullscreen();
 		}
 	};
 
-	const downloadArtifact = () => {
-		const blob = new Blob([contents[selectedContentIdx].content], { type: 'text/html' });
-		const url = URL.createObjectURL(blob);
-		const a = document.createElement('a');
-		a.href = url;
-		a.download = `artifact-${$chatId}-${selectedContentIdx}.html`;
-		document.body.appendChild(a);
-		a.click();
-		document.body.removeChild(a);
-		URL.revokeObjectURL(url);
+	const downloadArtifact = async () => {
+		const content = contents[selectedContentIdx];
+
+		if (content.type === 'pptx') {
+			// PPTX artifacts are downloaded via the PptxViewer component
+			// which handles generation and download internally
+			toast.info('Use the Download button in the presentation viewer');
+			return;
+		}
+
+		if (content.type === 'excel') {
+			// For Excel artifacts, fetch the file and download
+			try {
+				const response = await fetch(content.url);
+				const blob = await response.blob();
+				saveAs(blob, content.name || `artifact-${$chatId}-${selectedContentIdx}.xlsx`);
+			} catch (e) {
+				console.error('Error downloading Excel file:', e);
+				toast.error('Failed to download Excel file');
+			}
+		} else {
+			// For HTML/SVG artifacts
+			const mimeType = content.type === 'svg' ? 'image/svg+xml' : 'text/html';
+			const extension = content.type === 'svg' ? 'svg' : 'html';
+			const blob = new Blob([content.content], { type: mimeType });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `artifact-${$chatId}-${selectedContentIdx}.${extension}`;
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+			URL.revokeObjectURL(url);
+		}
 	};
 
 	onMount(() => {
@@ -175,17 +235,17 @@
 					</div>
 
 					<div class="flex items-center gap-1.5">
-						<button
-							class="copy-code-button bg-none border-none text-xs bg-gray-50 hover:bg-gray-100 dark:bg-gray-850 dark:hover:bg-gray-800 transition rounded-md px-1.5 py-0.5"
-							on:click={() => {
-								copyToClipboard(contents[selectedContentIdx].content);
-								copied = true;
-
-								setTimeout(() => {
-									copied = false;
-								}, 2000);
-							}}>{copied ? $i18n.t('Copied') : $i18n.t('Copy')}</button
-						>
+						{#if contents[selectedContentIdx].type !== 'excel'}
+							<button
+								class="copy-code-button bg-none border-none text-xs bg-gray-50 hover:bg-gray-100 dark:bg-gray-850 dark:hover:bg-gray-800 transition rounded-md px-1.5 py-0.5"
+								on:click={() => {
+									copyToClipboard(contents[selectedContentIdx].content);
+									copied = true;
+									setTimeout(() => {
+										copied = false;
+									}, 2000);
+								}}>{copied ? $i18n.t('Copied') : $i18n.t('Copy')}</button>
+						{/if}
 
 						<Tooltip content={$i18n.t('Download')}>
 							<button
@@ -196,7 +256,7 @@
 							</button>
 						</Tooltip>
 
-						{#if contents[selectedContentIdx].type === 'iframe'}
+						{#if contents[selectedContentIdx].type === 'iframe' || contents[selectedContentIdx].type === 'excel' || contents[selectedContentIdx].type === 'presentation' || contents[selectedContentIdx].type === 'pptx'}
 							<Tooltip content={$i18n.t('Open in full screen')}>
 								<button
 									class=" bg-none border-none text-xs bg-gray-50 hover:bg-gray-100 dark:bg-gray-850 dark:hover:bg-gray-800 transition rounded-md p-0.5"
@@ -226,7 +286,7 @@
 			<div class=" absolute top-0 left-0 right-0 bottom-0 z-10"></div>
 		{/if}
 
-		<div class="flex-1 w-full h-full">
+		<div class="flex-1 w-full h-full pointer-events-auto">
 			<div class=" h-full flex flex-col">
 				{#if contents.length > 0}
 					<div class="max-w-full w-full h-full">
@@ -248,6 +308,12 @@
 								className=" w-full h-full max-h-full overflow-hidden"
 								svg={contents[selectedContentIdx].content}
 							/>
+						{:else if contents[selectedContentIdx].type === 'excel'}
+							<ExcelViewer file={contents[selectedContentIdx]} />
+						{:else if contents[selectedContentIdx].type === 'presentation'}
+							<RevealViewer content={contents[selectedContentIdx].content} />
+						{:else if contents[selectedContentIdx].type === 'pptx'}
+							<PptxViewer slideData={contents[selectedContentIdx]} />
 						{/if}
 					</div>
 				{:else}

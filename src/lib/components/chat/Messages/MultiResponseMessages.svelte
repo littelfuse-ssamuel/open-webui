@@ -325,6 +325,8 @@
 									{addMessages}
 									{readOnly}
 									{topPadding}
+									on:openExcelArtifact
+									on:openPptxArtifact
 								/>
 							{/if}
 						{/key}
@@ -382,6 +384,8 @@
 										{readOnly}
 										{editCodeBlock}
 										{topPadding}
+										on:openExcelArtifact
+										on:openPptxArtifact
 									/>
 								{/if}
 							{/key}

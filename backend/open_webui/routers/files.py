@@ -46,6 +46,43 @@ from pydantic import BaseModel
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MODELS"])
 
+
+def sanitize_for_json(obj, max_depth=10):
+    """
+    Recursively remove non-JSON-serializable values from a dict/list.
+    This ensures metadata can be safely stored in the database without
+    causing serialization errors from functions or other non-serializable objects.
+    """
+    if max_depth <= 0:
+        return None
+
+    if obj is None:
+        return None
+    elif isinstance(obj, dict):
+        return {
+            k: sanitize_for_json(v, max_depth - 1)
+            for k, v in obj.items()
+            if not callable(v) and sanitize_for_json(v, max_depth - 1) is not None
+        }
+    elif isinstance(obj, list):
+        return [
+            sanitize_for_json(item, max_depth - 1)
+            for item in obj
+            if not callable(item) and sanitize_for_json(item, max_depth - 1) is not None
+        ]
+    elif callable(obj):
+        return None
+    elif isinstance(obj, (str, int, float, bool)):
+        return obj
+    else:
+        # Try to serialize - if it fails, skip it
+        try:
+            json.dumps(obj)
+            return obj
+        except (TypeError, ValueError):
+            return None
+
+
 router = APIRouter()
 
 
@@ -280,7 +317,7 @@ def upload_file_handler(
                         "name": name,
                         "content_type": file.content_type,
                         "size": len(contents),
-                        "data": file_metadata,
+                        "data": sanitize_for_json(file_metadata),
                     },
                 }
             ),

@@ -76,7 +76,9 @@
 	};
 
 	const onMouseDown = (event) => {
-		dragged = true;
+		if (event.target.closest('#controls-resizer')) {
+			dragged = true;
+		}
 	};
 
 	const onMouseUp = (event) => {

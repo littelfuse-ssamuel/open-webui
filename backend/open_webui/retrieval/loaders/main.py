@@ -34,60 +34,6 @@ from open_webui.env import SRC_LOG_LEVELS, GLOBAL_LOG_LEVEL
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
-log.setLevel(SRC_LOG_LEVELS["RAG"])
-
-known_source_ext = [
-    "go",
-    "py",
-    "java",
-    "sh",
-    "bat",
-    "ps1",
-    "cmd",
-    "js",
-    "ts",
-    "css",
-    "cpp",
-    "hpp",
-    "h",
-    "c",
-    "cs",
-    "sql",
-    "log",
-    "ini",
-    "pl",
-    "pm",
-    "r",
-    "dart",
-    "dockerfile",
-    "env",
-    "php",
-    "hs",
-    "hsc",
-    "lua",
-    "nginxconf",
-    "conf",
-    "m",
-    "mm",
-    "plsql",
-    "perl",
-    "rb",
-    "rs",
-    "db2",
-    "scala",
-    "bash",
-    "swift",
-    "vue",
-    "svelte",
-    "ex",
-    "exs",
-    "erl",
-    "tsx",
-    "jsx",
-    "hs",
-    "lhs",
-    "json",
-]
 
 
 class TikaLoader:
@@ -233,16 +179,59 @@ class Loader:
 
     def load(
         self, filename: str, file_content_type: str, file_path: str
-    ) -> list[Document]:
+    ) -> list[Document] | tuple[list[Document], list[str]]:
         loader = self._get_loader(filename, file_content_type, file_path)
-        docs = loader.load()
+        log.info(f"Loader.load: engine='{self.engine}', loader_type={type(loader).__name__}")
+        raw_result = loader.load()
+        log.info(f"Loader.load: raw_result type={type(raw_result)}, is_tuple={isinstance(raw_result, tuple)}")
 
-        return [
-            Document(
-                page_content=ftfy.fix_text(doc.page_content), metadata=doc.metadata
-            )
-            for doc in docs
-        ]
+        # NEW: preserve image_refs if present
+        has_image_refs = isinstance(raw_result, tuple) and len(raw_result) == 2
+        if has_image_refs:
+            docs, image_refs = raw_result
+            log.info(f"Loader.load: Extracted tuple with {len(docs)} docs and {len(image_refs)} image_refs")
+        else:
+            docs = raw_result
+            image_refs = []
+            log.info(f"Loader.load: Non-tuple result, raw_result type: {type(raw_result)}")
+
+        from collections.abc import Iterable
+        from langchain_core.documents import Document as LCDocument
+
+        flat_docs: list[LCDocument] = []
+
+        def _flatten(items):
+            for item in items:
+                # Avoid treating strings/bytes/Documents as generic iterables
+                if isinstance(item, Iterable) and not isinstance(
+                    item, (str, bytes, LCDocument)
+                ):
+                    yield from _flatten(item)
+                else:
+                    yield item
+
+        for item in _flatten(docs):
+            if isinstance(item, LCDocument):
+                flat_docs.append(
+                    Document(
+                        page_content=ftfy.fix_text(item.page_content),
+                        metadata=item.metadata,
+                    )
+                )
+            else:
+                log.warning(
+                    "Loader returned non-Document item of type %s; skipping: %r",
+                    type(item),
+                    item,
+                )
+
+        # NEW: return tuple if we originally had image_refs
+        if has_image_refs:
+            log.info(f"Loader.load: Returning tuple with {len(flat_docs)} docs and {len(image_refs)} image_refs")
+            return flat_docs, image_refs
+
+        log.info(f"Loader.load: Returning list with {len(flat_docs)} docs (no image_refs)")
+        return flat_docs
 
     def _is_text_file(self, file_ext: str, file_content_type: str) -> bool:
         return file_ext in known_source_ext or (
@@ -254,144 +243,79 @@ class Loader:
 
     def _get_loader(self, filename: str, file_content_type: str, file_path: str):
         file_ext = filename.split(".")[-1].lower()
+        # Normalize engine to lowercase for consistent matching
+        engine = (self.engine or "").strip().lower()
+        log.info(f"_get_loader: original_engine='{self.engine}', normalized_engine='{engine}', file_ext='{file_ext}', content_type='{file_content_type}'")
 
-        if (
-            self.engine == "external"
-            and self.kwargs.get("EXTERNAL_DOCUMENT_LOADER_URL")
-            and self.kwargs.get("EXTERNAL_DOCUMENT_LOADER_API_KEY")
-        ):
+        if engine == "youtube":
+            loader = YoutubeLoader.from_youtube_url(
+                file_path, add_video_info=True, language="en"
+            )
+        elif engine == "web" or engine == "external":
+            log.info(f"_get_loader: Using ExternalDocumentLoader with extract_images={self.kwargs.get('PDF_EXTRACT_IMAGES')}")
             loader = ExternalDocumentLoader(
-                file_path=file_path,
                 url=self.kwargs.get("EXTERNAL_DOCUMENT_LOADER_URL"),
                 api_key=self.kwargs.get("EXTERNAL_DOCUMENT_LOADER_API_KEY"),
+                file_path=file_path,
+                mime_type=file_content_type,
+                user=self.user,
+                extract_images=self.kwargs.get("PDF_EXTRACT_IMAGES"),
+            )
+        elif engine == "azure_document_intelligence":
+            credential = DefaultAzureCredential()
+            loader = AzureAIDocumentIntelligenceLoader(
+                api_key=self.kwargs.get("AZURE_DOCUMENT_INTELLIGENCE_API_KEY"),
+                api_endpoint=self.kwargs.get("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT"),
+                api_model=self.kwargs.get("AZURE_DOCUMENT_INTELLIGENCE_MODEL"),
+                file_path=file_path,
+                api_version=self.kwargs.get("AZURE_DOCUMENT_INTELLIGENCE_API_VERSION"),
+                mode="markdown",
+                credential=credential,
+                content_type=file_content_type,
+            )
+        elif engine == "tika":
+            loader = TikaLoader(
+                url=self.kwargs.get("TIKA_URL"),
+                file_path=file_path,
                 mime_type=file_content_type,
                 extract_images=self.kwargs.get("PDF_EXTRACT_IMAGES"),
-                user=self.user,
             )
-        elif self.engine == "tika" and self.kwargs.get("TIKA_SERVER_URL"):
-            if self._is_text_file(file_ext, file_content_type):
-                loader = TextLoader(file_path, autodetect_encoding=True)
-            else:
-                loader = TikaLoader(
-                    url=self.kwargs.get("TIKA_SERVER_URL"),
-                    file_path=file_path,
-                    extract_images=self.kwargs.get("PDF_EXTRACT_IMAGES"),
-                )
-        elif (
-            self.engine == "datalab_marker"
-            and self.kwargs.get("DATALAB_MARKER_API_KEY")
-            and file_ext
-            in [
-                "pdf",
-                "xls",
-                "xlsx",
-                "ods",
-                "doc",
-                "docx",
-                "odt",
-                "ppt",
-                "pptx",
-                "odp",
-                "html",
-                "epub",
-                "png",
-                "jpeg",
-                "jpg",
-                "webp",
-                "gif",
-                "tiff",
-            ]
-        ):
-            api_base_url = self.kwargs.get("DATALAB_MARKER_API_BASE_URL", "")
-            if not api_base_url or api_base_url.strip() == "":
-                api_base_url = "https://www.datalab.to/api/v1/marker"  # https://github.com/open-webui/open-webui/pull/16867#issuecomment-3218424349
-
+        elif engine == "docling":
+            loader = DoclingLoader(
+                url=self.kwargs.get("DOCLING_URL"),
+                file_path=file_path,
+                mime_type=file_content_type,
+                params=self.kwargs.get("DOCLING_PARAMS"),
+            )
+        elif engine == "mistral":
+            loader = MistralLoader(
+                file_path=file_path,
+                MISTRAL_API_KEY=self.kwargs.get("MISTRAL_API_KEY"),
+                MISTRAL_MODEL=self.kwargs.get("MISTRAL_FILE_PROCESSOR_MODEL"),
+                params=self.kwargs.get("MISTRAL_FILE_PROCESSOR_PARAMS"),
+            )
+        elif engine == "datalab_marker":
             loader = DatalabMarkerLoader(
                 file_path=file_path,
-                api_key=self.kwargs["DATALAB_MARKER_API_KEY"],
-                api_base_url=api_base_url,
-                additional_config=self.kwargs.get("DATALAB_MARKER_ADDITIONAL_CONFIG"),
-                use_llm=self.kwargs.get("DATALAB_MARKER_USE_LLM", False),
-                skip_cache=self.kwargs.get("DATALAB_MARKER_SKIP_CACHE", False),
-                force_ocr=self.kwargs.get("DATALAB_MARKER_FORCE_OCR", False),
-                paginate=self.kwargs.get("DATALAB_MARKER_PAGINATE", False),
-                strip_existing_ocr=self.kwargs.get(
-                    "DATALAB_MARKER_STRIP_EXISTING_OCR", False
+                DATALAB_MARKER_API_KEY=self.kwargs.get("DATALAB_MARKER_API_KEY"),
+                DATALAB_MARKER_API_BASE_URL=self.kwargs.get(
+                    "DATALAB_MARKER_API_BASE_URL"
                 ),
-                disable_image_extraction=self.kwargs.get(
-                    "DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION", False
-                ),
-                format_lines=self.kwargs.get("DATALAB_MARKER_FORMAT_LINES", False),
-                output_format=self.kwargs.get(
-                    "DATALAB_MARKER_OUTPUT_FORMAT", "markdown"
-                ),
+                params=self.kwargs.get("DATALAB_MARKER_PARAMS"),
             )
-        elif self.engine == "docling" and self.kwargs.get("DOCLING_SERVER_URL"):
-            if self._is_text_file(file_ext, file_content_type):
-                loader = TextLoader(file_path, autodetect_encoding=True)
-            else:
-                # Build params for DoclingLoader
-                params = self.kwargs.get("DOCLING_PARAMS", {})
-                if not isinstance(params, dict):
-                    try:
-                        params = json.loads(params)
-                    except json.JSONDecodeError:
-                        log.error("Invalid DOCLING_PARAMS format, expected JSON object")
-                        params = {}
-
-                loader = DoclingLoader(
-                    url=self.kwargs.get("DOCLING_SERVER_URL"),
-                    file_path=file_path,
-                    mime_type=file_content_type,
-                    params=params,
-                )
-        elif (
-            self.engine == "document_intelligence"
-            and self.kwargs.get("DOCUMENT_INTELLIGENCE_ENDPOINT") != ""
-            and (
-                file_ext in ["pdf", "docx", "ppt", "pptx"]
-                or file_content_type
-                in [
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    "application/vnd.ms-powerpoint",
-                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                ]
-            )
-        ):
-            if self.kwargs.get("DOCUMENT_INTELLIGENCE_KEY") != "":
-                loader = AzureAIDocumentIntelligenceLoader(
-                    file_path=file_path,
-                    api_endpoint=self.kwargs.get("DOCUMENT_INTELLIGENCE_ENDPOINT"),
-                    api_key=self.kwargs.get("DOCUMENT_INTELLIGENCE_KEY"),
-                )
-            else:
-                loader = AzureAIDocumentIntelligenceLoader(
-                    file_path=file_path,
-                    api_endpoint=self.kwargs.get("DOCUMENT_INTELLIGENCE_ENDPOINT"),
-                    azure_credential=DefaultAzureCredential(),
-                )
-        elif self.engine == "mineru" and file_ext in [
-            "pdf"
-        ]:  # MinerU currently only supports PDF
+        elif engine == "mineru":
             loader = MinerULoader(
                 file_path=file_path,
-                api_mode=self.kwargs.get("MINERU_API_MODE", "local"),
-                api_url=self.kwargs.get("MINERU_API_URL", "http://localhost:8000"),
-                api_key=self.kwargs.get("MINERU_API_KEY", ""),
-                params=self.kwargs.get("MINERU_PARAMS", {}),
-            )
-        elif (
-            self.engine == "mistral_ocr"
-            and self.kwargs.get("MISTRAL_OCR_API_KEY") != ""
-            and file_ext
-            in ["pdf"]  # Mistral OCR currently only supports PDF and images
-        ):
-            loader = MistralLoader(
-                base_url=self.kwargs.get("MISTRAL_OCR_API_BASE_URL"),
-                api_key=self.kwargs.get("MISTRAL_OCR_API_KEY"),
-                file_path=file_path,
+                api_mode=self.kwargs.get("MINERU_API_MODE"),
+                LOCAL_API_URL=self.kwargs.get("MINERU_LOCAL_API_URL"),
+                CLOUD_API_URL=self.kwargs.get("MINERU_CLOUD_API_URL"),
+                MINERU_API_KEY=self.kwargs.get("MINERU_API_KEY"),
+                MINERU_PARAMS=self.kwargs.get("MINERU_PARAMS"),
             )
         else:
+            # No specific engine matched - using file-type-specific loaders
+            # WARNING: These loaders do NOT return image_refs tuple
+            log.warning(f"_get_loader: No engine matched (engine='{engine}'), using file-type-specific loader for ext='{file_ext}'. Image extraction will NOT return image_refs.")
             if file_ext == "pdf":
                 loader = PyPDFLoader(
                     file_path, extract_images=self.kwargs.get("PDF_EXTRACT_IMAGES")
@@ -434,3 +358,53 @@ class Loader:
                 loader = TextLoader(file_path, autodetect_encoding=True)
 
         return loader
+
+
+known_source_ext = {
+    "bat",
+    "cmd",
+    "cfg",
+    "cfm",
+    "cgi",
+    "conf",
+    "config",
+    "cpp",
+    "cs",
+    "css",
+    "csv",
+    "env",
+    "go",
+    "h",
+    "hpp",
+    "hs",
+    "html",
+    "ini",
+    "java",
+    "js",
+    "json",
+    "kt",
+    "kts",
+    "lisp",
+    "lua",
+    "md",
+    "php",
+    "pl",
+    "ps1",
+    "py",
+    "r",
+    "rb",
+    "rs",
+    "scala",
+    "sh",
+    "sql",
+    "ts",
+    "tsx",
+    "toml",
+    "tsv",
+    "txt",
+    "vb",
+    "vue",
+    "xml",
+    "yaml",
+    "yml",
+}
