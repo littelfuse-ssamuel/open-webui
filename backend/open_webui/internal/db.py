@@ -20,14 +20,13 @@ from open_webui.env import (
 )
 from peewee_migrate import Router
 from sqlalchemy import Dialect, create_engine, MetaData, event, types
-from sqlalchemy. ext.declarative import declarative_base
+from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import scoped_session, sessionmaker, Session
-from sqlalchemy. pool import QueuePool, NullPool
-from sqlalchemy.sql. type_api import _T
+from sqlalchemy.pool import QueuePool, NullPool
+from sqlalchemy.sql.type_api import _T
 from typing_extensions import Self
 
-log = logging. getLogger(__name__)
-log.setLevel(SRC_LOG_LEVELS["DB"])
+log = logging.getLogger(__name__)
 
 
 class JSONField(types.TypeDecorator):
@@ -41,11 +40,11 @@ class JSONField(types.TypeDecorator):
         if value is not None:
             return json.loads(value)
 
-    def copy(self, **kw:  Any) -> Self:
-        return JSONField(self.impl. length)
+    def copy(self, **kw: Any) -> Self:
+        return JSONField(self.impl.length)
 
     def db_value(self, value):
-        return json. dumps(value)
+        return json.dumps(value)
 
     def python_value(self, value):
         if value is not None:
@@ -57,14 +56,14 @@ class JSONField(types.TypeDecorator):
 def handle_peewee_migration(DATABASE_URL):
     # db = None
     try:
-        # Replace the postgresql: // with postgres:// to handle the peewee migration
+        # Replace the postgresql:// with postgres:// to handle the peewee migration
         db = register_connection(DATABASE_URL.replace("postgresql://", "postgres://"))
         migrate_dir = OPEN_WEBUI_DIR / "internal" / "migrations"
         router = Router(db, logger=log, migrate_dir=migrate_dir)
         router.run()
         db.close()
 
-    except Exception as e: 
+    except Exception as e:
         log.error(f"Failed to initialize the database connection: {e}")
         log.warning(
             "Hint: If your database password contains special characters, you may need to URL-encode it."
@@ -88,8 +87,8 @@ if ENABLE_DB_MIGRATIONS:
 SQLALCHEMY_DATABASE_URL = DATABASE_URL
 
 # Handle SQLCipher URLs
-if SQLALCHEMY_DATABASE_URL. startswith("sqlite+sqlcipher://"):
-    database_password = os.environ. get("DATABASE_PASSWORD")
+if SQLALCHEMY_DATABASE_URL.startswith("sqlite+sqlcipher://"):
+    database_password = os.environ.get("DATABASE_PASSWORD")
     if not database_password or database_password.strip() == "":
         raise ValueError(
             "DATABASE_PASSWORD is required when using sqlite+sqlcipher:// URLs"
@@ -127,7 +126,7 @@ elif "sqlite" in SQLALCHEMY_DATABASE_URL:
         if DATABASE_ENABLE_SQLITE_WAL:
             cursor.execute("PRAGMA journal_mode=WAL")
         else:
-            cursor. execute("PRAGMA journal_mode=DELETE")
+            cursor.execute("PRAGMA journal_mode=DELETE")
         cursor.close()
 
     event.listen(engine, "connect", on_connect)
@@ -143,7 +142,7 @@ else:
                 pool_pre_ping=True,
                 poolclass=QueuePool,
             )
-        else: 
+        else:
             engine = create_engine(
                 SQLALCHEMY_DATABASE_URL, pool_pre_ping=True, poolclass=NullPool
             )
@@ -161,7 +160,7 @@ ScopedSession = scoped_session(SessionLocal)
 
 def get_session():
     db = SessionLocal()
-    try: 
+    try:
         yield db
     finally:
         db.close()
@@ -172,7 +171,7 @@ get_db = contextmanager(get_session)
 
 @contextmanager
 def get_db_context(db: Optional[Session] = None):
-    if isinstance(db, Session) and DATABASE_ENABLE_SESSION_SHARING: 
+    if isinstance(db, Session) and DATABASE_ENABLE_SESSION_SHARING:
         yield db
     else:
         with get_db() as session:
