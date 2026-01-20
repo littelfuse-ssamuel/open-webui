@@ -24,10 +24,8 @@ from open_webui.storage.provider import Storage
 from open_webui.models.files import Files, FileForm, FileModel
 from open_webui.routers.files import upload_file_handler
 from open_webui.config import DATA_DIR, UPLOAD_DIR
-from open_webui.env import SRC_LOG_LEVELS
 
 log = logging.getLogger(__name__)
-log.setLevel(SRC_LOG_LEVELS["MAIN"])
 
 router = APIRouter()
 

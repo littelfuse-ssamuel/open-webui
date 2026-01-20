@@ -1,6 +1,5 @@
 import requests
-import logging
-import os
+import logging, os
 import base64
 import uuid
 from pathlib import Path
@@ -10,11 +9,10 @@ from urllib.parse import quote
 from langchain_core.document_loaders import BaseLoader
 from langchain_core.documents import Document
 from open_webui.utils.headers import include_user_info_headers
-from open_webui.env import SRC_LOG_LEVELS, EXTERNAL_DOCUMENT_LOADER_TIMEOUT
+from open_webui.env import EXTERNAL_DOCUMENT_LOADER_TIMEOUT
 from open_webui.config import PDF_EXTRACT_IMAGES_DIR
 
 log = logging.getLogger(__name__)
-log.setLevel(SRC_LOG_LEVELS["RAG"])
 
 
 class ExternalDocumentLoader(BaseLoader):
