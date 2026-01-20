@@ -1567,9 +1567,12 @@ class ChatTable:
     # Custom methods (Littelfuse additions)
     # ===========================================
 
-    def get_chat_by_id_with_fresh_files(self, id: str) -> Optional[ChatModel]:
-        """Get chat by ID and ensure all file references have fresh data"""
-        chat = self.get_chat_by_id(id)
+def get_chat_by_id_with_fresh_files(
+    self, id: str, db: Optional[Session] = None
+) -> Optional[ChatModel]:
+    """Get chat by ID and ensure all file references have fresh data"""
+    with get_db_context(db) as db:
+        chat = self.get_chat_by_id(id, db=db)
         if not chat:
             return None
 
@@ -1587,30 +1590,30 @@ class ChatTable:
                             if isinstance(file_ref, dict) and "file" in file_ref:
                                 file_id = file_ref["file"].get("id")
                                 if file_id:
-                                    # Get fresh file data
-                                    fresh_file = Files.get_file_by_id(file_id)
+                                    fresh_file = Files.get_file_by_id(file_id, db=db)
                                     if fresh_file:
                                         old_image_refs = file_ref["file"].get(
                                             "image_refs"
                                         )
                                         new_image_refs = fresh_file.image_refs
 
-                                        # Update with fresh data
                                         file_ref["file"] = fresh_file.model_dump()
 
-                                        # Log if image_refs changed
                                         if old_image_refs != new_image_refs:
                                             log.info(
-                                                f"Refreshed file {file_id} in chat {id}: image_refs updated from {old_image_refs} to {new_image_refs}"
+                                                f"Refreshed file {file_id} in chat {id}: "
+                                                f"image_refs updated from {old_image_refs} "
+                                                f"to {new_image_refs}"
                                             )
                                             chat_updated = True
 
-            # Update the chat object with fresh data
+            # If we changed anything, persist updated chat JSON
             if chat_updated:
-                chat.chat = chat_data
+                self.update_chat_by_id(id, chat_data, db=db)
+                # Re-fetch to return a clean model
+                chat = self.get_chat_by_id(id, db=db)
 
             return chat
-
         except Exception as e:
             log.error(f"Error refreshing file data in chat {id}: {e}")
             return chat
