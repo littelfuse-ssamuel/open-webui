@@ -184,14 +184,14 @@ RUN if [ "$USE_OLLAMA" = "true" ] && [ "$USE_SLIM" != "true" ]; then \
 # COPY --from=build /app/onnx /root/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx
 
 # copy built frontend files
-COPY --chown=$UID: $GID --from=build /app/build /app/build
+COPY --chown=$UID:$GID --from=build /app/build /app/build
 COPY --chown=$UID:$GID --from=build /app/package.json /app/package.json
 
 # --- CUSTOM:  Copy CHANGELOG.md directly from context ---
-COPY --chown=$UID:$GID CHANGELOG. md /app/CHANGELOG.md
+COPY --chown=$UID:$GID CHANGELOG.md /app/CHANGELOG.md
 
 # copy backend files
-COPY --chown=$UID:$GID ./backend . 
+COPY --chown=$UID:$GID ./backend ./
 
 EXPOSE 8080
 
