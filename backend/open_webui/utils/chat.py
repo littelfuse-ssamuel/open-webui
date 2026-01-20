@@ -59,12 +59,11 @@ from open_webui.utils.filter import (
     process_filter_functions,
 )
 
-from open_webui.env import SRC_LOG_LEVELS, GLOBAL_LOG_LEVEL, BYPASS_MODEL_ACCESS_CONTROL
+from open_webui.env import GLOBAL_LOG_LEVEL, BYPASS_MODEL_ACCESS_CONTROL
 
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
-log.setLevel(SRC_LOG_LEVELS["MAIN"])
 
 
 async def generate_direct_chat_completion(
@@ -171,6 +170,7 @@ async def generate_chat_completion(
     form_data: dict,
     user: Any,
     bypass_filter: bool = False,
+    bypass_system_prompt: bool = False,
 ):
     log.debug(f"generate_chat_completion: {form_data}")
     if BYPASS_MODEL_ACCESS_CONTROL:
@@ -429,7 +429,11 @@ async def generate_chat_completion(
                         yield chunk
 
                 response = await generate_chat_completion(
-                    request, form_data, user, bypass_filter=True
+                    request,
+                    form_data,
+                    user,
+                    bypass_filter=True,
+                    bypass_system_prompt=bypass_system_prompt,
                 )
                 return StreamingResponse(
                     stream_wrapper(response.body_iterator),
@@ -440,7 +444,11 @@ async def generate_chat_completion(
                 return {
                     **(
                         await generate_chat_completion(
-                            request, form_data, user, bypass_filter=True
+                            request,
+                            form_data,
+                            user,
+                            bypass_filter=True,
+                            bypass_system_prompt=bypass_system_prompt,
                         )
                     ),
                     "selected_model_id": selected_model_id,
@@ -459,6 +467,7 @@ async def generate_chat_completion(
                 form_data=form_data,
                 user=user,
                 bypass_filter=bypass_filter,
+                bypass_system_prompt=bypass_system_prompt,
             )
             if form_data.get("stream"):
                 response.headers["content-type"] = "text/event-stream"
@@ -475,6 +484,7 @@ async def generate_chat_completion(
                 form_data=form_data,
                 user=user,
                 bypass_filter=bypass_filter,
+                bypass_system_prompt=bypass_system_prompt,
             )
 
 
@@ -502,7 +512,7 @@ async def chat_completed(request: Request, form_data: dict, user: Any):
     try:
         data = await process_pipeline_outlet_filter(request, data, user, models)
     except Exception as e:
-        return Exception(f"Error: {e}")
+        raise Exception(f"Error: {e}")
 
     metadata = {
         "chat_id": data["chat_id"],
@@ -538,7 +548,7 @@ async def chat_completed(request: Request, form_data: dict, user: Any):
         )
         return result
     except Exception as e:
-        return Exception(f"Error: {e}")
+        raise Exception(f"Error: {e}")
 
 
 async def chat_action(request: Request, action_id: str, form_data: dict, user: Any):
@@ -634,6 +644,6 @@ async def chat_action(request: Request, action_id: str, form_data: dict, user: A
                 data = action(**params)
 
         except Exception as e:
-            return Exception(f"Error: {e}")
+            raise Exception(f"Error: {e}")
 
     return data

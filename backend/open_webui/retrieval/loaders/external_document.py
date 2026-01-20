@@ -1,5 +1,6 @@
 import requests
-import logging, os
+import logging
+import os
 import base64
 import uuid
 from pathlib import Path
@@ -17,6 +18,17 @@ log.setLevel(SRC_LOG_LEVELS["RAG"])
 
 
 class ExternalDocumentLoader(BaseLoader):
+    """
+    External document loader with image extraction support.
+    
+    This is a custom extension of the base ExternalDocumentLoader that adds:
+    - Image extraction from documents (PDFs, etc.)
+    - Configurable request timeout
+    - Returns tuple of (documents, image_refs) instead of just documents
+    
+    Littelfuse custom implementation.
+    """
+
     def __init__(
         self,
         file_path,
@@ -34,7 +46,15 @@ class ExternalDocumentLoader(BaseLoader):
         self.user = user
         self.extract_images = extract_images
 
-    def load(self) -> tuple[List[Document], List[str]]:
+    def load(self) -> Tuple[List[Document], List[str]]:
+        """
+        Load document from external service.
+        
+        Returns:
+            Tuple containing:
+            - List[Document]: Parsed documents
+            - List[str]: Image reference paths (empty if extract_images=False)
+        """
         with open(self.file_path, "rb") as f:
             data = f.read()
 
@@ -47,7 +67,7 @@ class ExternalDocumentLoader(BaseLoader):
 
         try:
             headers["X-Filename"] = quote(os.path.basename(self.file_path))
-        except:
+        except Exception:
             pass
 
         if self.user is not None:
@@ -61,7 +81,12 @@ class ExternalDocumentLoader(BaseLoader):
             url = url[:-1]
 
         try:
-            response = requests.put(f"{url}/process", data=data, headers=headers, timeout=EXTERNAL_DOCUMENT_LOADER_TIMEOUT)
+            response = requests.put(
+                f"{url}/process",
+                data=data,
+                headers=headers,
+                timeout=EXTERNAL_DOCUMENT_LOADER_TIMEOUT,
+            )
         except Exception as e:
             log.error(f"Error connecting to endpoint: {e}")
             raise Exception(f"Error connecting to endpoint: {e}")
@@ -70,19 +95,25 @@ class ExternalDocumentLoader(BaseLoader):
             response_data = response.json()
             if not response_data:
                 raise Exception("Error loading document: No content returned")
-            log.info(f"ExternalDocumentLoader: Response received. Type: {type(response_data)}")
-            log.info(f"ExternalDocumentLoader: extract_images setting: {self.extract_images}")
-            
+
+            log.info(
+                f"ExternalDocumentLoader: Response received. Type: {type(response_data)}"
+            )
+            log.info(
+                f"ExternalDocumentLoader: extract_images setting: {self.extract_images}"
+            )
+
             all_image_refs = []
 
             def process_doc_data(doc_data):
                 metadata = doc_data.get("metadata", {}) or {}
 
                 if "images" in doc_data:
-                    log.info(f"ExternalDocumentLoader: Found {len(doc_data.get('images', []))} images in doc_data payload")
+                    log.info(
+                        f"ExternalDocumentLoader: Found {len(doc_data.get('images', []))} images in doc_data payload"
+                    )
                 else:
                     log.info("ExternalDocumentLoader: No 'images' key in doc_data payload")
-
 
                 if self.extract_images and "images" in doc_data:
                     images_data = doc_data.get("images", [])
@@ -96,7 +127,9 @@ class ExternalDocumentLoader(BaseLoader):
                                 img_format = "png"
                                 _, b64_image = b64_image.split(",", 1)
                             else:
-                                log.warning(f"ExternalDocumentLoader: Image {idx} has unknown prefix: {b64_image[:30]}...")
+                                log.warning(
+                                    f"ExternalDocumentLoader: Image {idx} has unknown prefix: {b64_image[:30]}..."
+                                )
 
                             image_data = base64.b64decode(b64_image)
                             image_filename = f"{uuid.uuid4()}.{img_format}"
@@ -107,14 +140,13 @@ class ExternalDocumentLoader(BaseLoader):
 
                             relative_path = f"images/{image_filename}"
                             all_image_refs.append(relative_path)
-                            log.info(f"Saved image to {image_path}, ref: {relative_path}")
+                            log.info(
+                                f"Saved image to {image_path}, ref: {relative_path}"
+                            )
                         except Exception as e:
                             log.error(f"Could not save extracted image: {e}")
 
-                return Document(
-                    page_content=doc_data.get("page_content"),
-                    metadata=metadata
-                )
+                return Document(page_content=doc_data.get("page_content"), metadata=metadata)
 
             docs = []
             if isinstance(response_data, dict):
@@ -123,11 +155,14 @@ class ExternalDocumentLoader(BaseLoader):
                 docs = [process_doc_data(doc) for doc in response_data]
             else:
                 raise Exception("Error loading document: Unable to parse content")
-            
+
             result = (docs, all_image_refs)
-            log.info(f"ExternalDocumentLoader.load: Returning tuple with {len(docs)} documents and {len(all_image_refs)} image refs, type={type(result)}")
+            log.info(
+                f"ExternalDocumentLoader.load: Returning tuple with {len(docs)} documents "
+                f"and {len(all_image_refs)} image refs, type={type(result)}"
+            )
             return result
-        
+
         else:
             raise Exception(
                 f"Error loading document: {response.status_code} {response.text}"

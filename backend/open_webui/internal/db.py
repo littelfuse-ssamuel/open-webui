@@ -15,16 +15,18 @@ from open_webui.env import (
     DATABASE_POOL_SIZE,
     DATABASE_POOL_TIMEOUT,
     DATABASE_ENABLE_SQLITE_WAL,
+    DATABASE_ENABLE_SESSION_SHARING,
+    ENABLE_DB_MIGRATIONS,
 )
 from peewee_migrate import Router
 from sqlalchemy import Dialect, create_engine, MetaData, event, types
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import scoped_session, sessionmaker
-from sqlalchemy.pool import QueuePool, NullPool
-from sqlalchemy.sql.type_api import _T
+from sqlalchemy. ext.declarative import declarative_base
+from sqlalchemy.orm import scoped_session, sessionmaker, Session
+from sqlalchemy. pool import QueuePool, NullPool
+from sqlalchemy.sql. type_api import _T
 from typing_extensions import Self
 
-log = logging.getLogger(__name__)
+log = logging. getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["DB"])
 
 
@@ -32,18 +34,18 @@ class JSONField(types.TypeDecorator):
     impl = types.Text
     cache_ok = True
 
-    def process_bind_param(self, value: Optional[_T], dialect: Dialect) -> Any:
+    def process_bind_param(self, value:  Optional[_T], dialect: Dialect) -> Any:
         return json.dumps(value)
 
     def process_result_value(self, value: Optional[_T], dialect: Dialect) -> Any:
         if value is not None:
             return json.loads(value)
 
-    def copy(self, **kw: Any) -> Self:
-        return JSONField(self.impl.length)
+    def copy(self, **kw:  Any) -> Self:
+        return JSONField(self.impl. length)
 
     def db_value(self, value):
-        return json.dumps(value)
+        return json. dumps(value)
 
     def python_value(self, value):
         if value is not None:
@@ -55,14 +57,14 @@ class JSONField(types.TypeDecorator):
 def handle_peewee_migration(DATABASE_URL):
     # db = None
     try:
-        # Replace the postgresql:// with postgres:// to handle the peewee migration
+        # Replace the postgresql: // with postgres:// to handle the peewee migration
         db = register_connection(DATABASE_URL.replace("postgresql://", "postgres://"))
         migrate_dir = OPEN_WEBUI_DIR / "internal" / "migrations"
         router = Router(db, logger=log, migrate_dir=migrate_dir)
         router.run()
         db.close()
 
-    except Exception as e:
+    except Exception as e: 
         log.error(f"Failed to initialize the database connection: {e}")
         log.warning(
             "Hint: If your database password contains special characters, you may need to URL-encode it."
@@ -77,14 +79,17 @@ def handle_peewee_migration(DATABASE_URL):
         assert db.is_closed(), "Database connection is still open."
 
 
-#handle_peewee_migration(DATABASE_URL)
+# NOTE:  Peewee migrations disabled for custom fork
+# Set ENABLE_DB_MIGRATIONS=true in env to re-enable if needed
+if ENABLE_DB_MIGRATIONS:
+    handle_peewee_migration(DATABASE_URL)
 
 
 SQLALCHEMY_DATABASE_URL = DATABASE_URL
 
 # Handle SQLCipher URLs
-if SQLALCHEMY_DATABASE_URL.startswith("sqlite+sqlcipher://"):
-    database_password = os.environ.get("DATABASE_PASSWORD")
+if SQLALCHEMY_DATABASE_URL. startswith("sqlite+sqlcipher://"):
+    database_password = os.environ. get("DATABASE_PASSWORD")
     if not database_password or database_password.strip() == "":
         raise ValueError(
             "DATABASE_PASSWORD is required when using sqlite+sqlcipher:// URLs"
@@ -92,8 +97,9 @@ if SQLALCHEMY_DATABASE_URL.startswith("sqlite+sqlcipher://"):
 
     # Extract database path from SQLCipher URL
     db_path = SQLALCHEMY_DATABASE_URL.replace("sqlite+sqlcipher://", "")
+    # Custom:  Remove leading slash for relative paths
     if db_path.startswith("/"):
-        db_path = db_path[1:]  # Remove leading slash for relative paths
+        db_path = db_path[1:]
 
     # Create a custom creator function that uses sqlcipher3
     def create_sqlcipher_connection():
@@ -121,7 +127,7 @@ elif "sqlite" in SQLALCHEMY_DATABASE_URL:
         if DATABASE_ENABLE_SQLITE_WAL:
             cursor.execute("PRAGMA journal_mode=WAL")
         else:
-            cursor.execute("PRAGMA journal_mode=DELETE")
+            cursor. execute("PRAGMA journal_mode=DELETE")
         cursor.close()
 
     event.listen(engine, "connect", on_connect)
@@ -137,7 +143,7 @@ else:
                 pool_pre_ping=True,
                 poolclass=QueuePool,
             )
-        else:
+        else: 
             engine = create_engine(
                 SQLALCHEMY_DATABASE_URL, pool_pre_ping=True, poolclass=NullPool
             )
@@ -150,15 +156,24 @@ SessionLocal = sessionmaker(
 )
 metadata_obj = MetaData(schema=DATABASE_SCHEMA)
 Base = declarative_base(metadata=metadata_obj)
-Session = scoped_session(SessionLocal)
+ScopedSession = scoped_session(SessionLocal)
 
 
 def get_session():
     db = SessionLocal()
-    try:
+    try: 
         yield db
     finally:
         db.close()
 
 
 get_db = contextmanager(get_session)
+
+
+@contextmanager
+def get_db_context(db: Optional[Session] = None):
+    if isinstance(db, Session) and DATABASE_ENABLE_SESSION_SHARING: 
+        yield db
+    else:
+        with get_db() as session:
+            yield session

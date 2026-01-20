@@ -102,31 +102,33 @@
 				{topPadding}
 			/>
 		{:else}
-			<MultiResponseMessages
-				bind:history
-				{chatId}
-				{messageId}
-				{selectedModels}
-				isLastMessage={messageId === history?.currentId}
-				{setInputText}
-				{updateChat}
-				{editMessage}
-				{saveMessage}
-				{rateMessage}
-				{actionMessage}
-				{submitMessage}
-				{deleteMessage}
-				{continueResponse}
-				{regenerateResponse}
-				{mergeResponses}
-				{triggerScroll}
-				{addMessages}
-				{readOnly}
-				{editCodeBlock}
-				{topPadding}
-				on:openExcelArtifact
-				on:openPptxArtifact
-			/>
+			{#key messageId}
+				<MultiResponseMessages
+					bind:history
+					{chatId}
+					{messageId}
+					{selectedModels}
+					isLastMessage={messageId === history?.currentId}
+					{setInputText}
+					{updateChat}
+					{editMessage}
+					{saveMessage}
+					{rateMessage}
+					{actionMessage}
+					{submitMessage}
+					{deleteMessage}
+					{continueResponse}
+					{regenerateResponse}
+					{mergeResponses}
+					{triggerScroll}
+					{addMessages}
+					{readOnly}
+					{editCodeBlock}
+					{topPadding}
+					on:openExcelArtifact
+					on:openPptxArtifact
+				/>
+			{/key}
 		{/if}
 	{/if}
 </div>
