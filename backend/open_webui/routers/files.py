@@ -57,6 +57,47 @@ router = APIRouter()
 
 
 ############################
+# Littelfuse custom: JSON sanitization helper
+############################
+
+
+def sanitize_for_json(obj, max_depth=10):
+    """
+    Recursively remove non-JSON-serializable values from a dict/list.
+    This ensures metadata can be safely stored in the database without
+    causing serialization errors from functions or other non-serializable objects.
+    """
+    if max_depth <= 0:
+        return None
+
+    if obj is None:
+        return None
+    elif isinstance(obj, dict):
+        return {
+            k: sanitize_for_json(v, max_depth - 1)
+            for k, v in obj.items()
+            if not callable(v) and sanitize_for_json(v, max_depth - 1) is not None
+        }
+    elif isinstance(obj, list):
+        return [
+            sanitize_for_json(item, max_depth - 1)
+            for item in obj
+            if not callable(item) and sanitize_for_json(item, max_depth - 1) is not None
+        ]
+    elif callable(obj):
+        return None
+    elif isinstance(obj, (str, int, float, bool)):
+        return obj
+    else:
+        # Try to serialize - if it fails, skip it
+        try:
+            json.dumps(obj)
+            return obj
+        except (TypeError, ValueError):
+            return None
+
+
+############################
 # Check if the current user has access to a file through any knowledge bases the user may be in.
 ############################
 
@@ -150,12 +191,18 @@ def process_uploaded_file(
                 elif (not file.content_type.startswith(("image/", "video/"))) or (
                     request.app.state.config.CONTENT_EXTRACTION_ENGINE == "external"
                 ):
-                    process_file(
+                    result = process_file(
                         request,
                         ProcessFileForm(file_id=file_item.id),
                         user=user,
                         db=db_session,
                     )
+                    
+                    # Littelfuse custom: Log image_refs for debugging
+                    log.info(f"Process file result: {result}")
+                    updated_file = Files.get_file_by_id(file_item.id, db=db_session)
+                    if updated_file:
+                        log.info(f"File {file_item.id} after processing - image_refs: {getattr(updated_file, 'image_refs', None)}")
                 else:
                     raise Exception(
                         f"File type {file.content_type} is not supported for processing"
@@ -164,12 +211,17 @@ def process_uploaded_file(
                 log.info(
                     f"File type {file.content_type} is not provided, but trying to process anyway"
                 )
-                process_file(
+                result = process_file(
                     request,
                     ProcessFileForm(file_id=file_item.id),
                     user=user,
                     db=db_session,
                 )
+                
+                # Littelfuse custom: Log image_refs for files without explicit content type
+                updated_file = Files.get_file_by_id(file_item.id, db=db_session)
+                if updated_file:
+                    log.info(f"File {file_item.id} after processing - image_refs: {getattr(updated_file, 'image_refs', None)}")
 
         except Exception as e:
             log.error(f"Error processing file: {file_item.id}")
@@ -284,7 +336,8 @@ def upload_file_handler(
                         "name": name,
                         "content_type": file.content_type,
                         "size": len(contents),
-                        "data": file_metadata,
+                        # Littelfuse custom: sanitize metadata to avoid serialization errors
+                        "data": sanitize_for_json(file_metadata),
                     },
                 }
             ),
@@ -744,7 +797,7 @@ async def get_html_file_content_by_id(
 
 
 @router.get("/{id}/content/{file_name}")
-async def get_file_content_by_id(
+async def get_file_content_by_id_and_name(
     id: str, user=Depends(get_verified_user), db: Session = Depends(get_session)
 ):
     file = Files.get_file_by_id(id, db=db)
@@ -782,7 +835,7 @@ async def get_file_content_by_id(
                     detail=ERROR_MESSAGES.NOT_FOUND,
                 )
         else:
-            # File path doesn’t exist, return the content as .txt if possible
+            # File path doesn't exist, return the content as .txt if possible
             file_content = file.content.get("content", "")
             file_name = file.filename
 

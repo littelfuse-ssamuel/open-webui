@@ -1,0 +1,63 @@
+FROM python:3.11-slim as builder
+
+# Build stage for dependencies
+WORKDIR /app
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-extloader.txt .
+
+# 1. Install CPU-only PyTorch first to save massive space (avoids pulling 2GB+ CUDA libs)
+# We do this here just to ensure the environment is clean, though the wheel step below uses --no-deps
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# 2. Build wheels for listed dependencies
+# We use --no-deps to prevent it from downloading the GPU version of Torch automatically
+RUN pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements-extloader.txt
+
+# Runtime stage
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install runtime dependencies
+# Added libgl1 and libglib2.0-0 which are REQUIRED for Docling/Vision libraries
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /app/certs
+
+# Copy wheels and install
+COPY --from=builder /app/wheels /wheels
+COPY requirements-extloader.txt .
+
+# Re-install CPU PyTorch in runtime (lightweight) and then the rest from wheels
+# Pip will resolve missing transitive dependencies (like numpy, pydantic) from PyPI here
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache /wheels/*
+
+# Copy application
+COPY extloader.py .
+
+# Environment variables for Docling cache
+ENV DOCLING_HOME=/app/models
+ENV HF_HOME=/app/models
+
+# Health check (Increased start-period to 60s because Docling loads models on startup)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD curl -f http://localhost:8000/ || exit 1
+
+EXPOSE 8000
+
+# Non-root user for security
+RUN useradd --create-home --shell /bin/bash app \
+    && mkdir -p /app/models \
+    && chown -R app:app /app
+USER app
+
+CMD ["uvicorn", "extloader:app", "--host", "0.0.0.0", "--port", "8000"]

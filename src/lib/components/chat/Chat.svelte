@@ -376,10 +376,46 @@
 					}
 				} else if (type === 'chat:message:delta' || type === 'message') {
 					message.content += data.content;
+
+					// Auto-open artifact panel for PPTX artifacts during streaming
+					if (
+						message.content?.includes('<artifact') &&
+						message.content?.includes('type="pptx"') &&
+						!$mobile &&
+						!$showArtifacts
+					) {
+						console.log('[PPTX] Detected PPTX artifact in streaming content, opening artifacts panel');
+						await tick();
+						showArtifacts.set(true);
+						showControls.set(true);
+						getContents();
+					}
 				} else if (type === 'chat:message' || type === 'replace') {
 					message.content = data.content;
+
+					// Auto-open artifact panel for PPTX artifacts (like HTML and Excel artifacts)
+					if (
+						data.content?.includes('<artifact') &&
+						data.content?.includes('type="pptx"') &&
+						!$mobile
+					) {
+						console.log('[PPTX] Detected PPTX artifact in message replace, opening artifacts panel');
+						await tick();
+						showArtifacts.set(true);
+						showControls.set(true);
+						// Refresh artifact contents to include the new PPTX artifact
+						getContents();
+					}
 				} else if (type === 'chat:message:files' || type === 'files') {
 					message.files = data.files;
+
+					// Auto-open artifact panel for Excel files (like HTML artifacts)
+					if (data.files?.some((f) => f.type === 'excel') && !$mobile) {
+						showArtifacts.set(true);
+						showControls.set(true);
+						// Refresh artifact contents to include the new Excel file
+						getContents();
+					}
 				} else if (type === 'chat:message:embeds' || type === 'embeds') {
 					message.embeds = data.embeds;
 				} else if (type === 'chat:message:error') {
@@ -835,6 +871,19 @@
 		artifactContents.set([]);
 	}
 
+	const getArtifact = () => {
+			const messages = history ? createMessagesList(history, history.currentId) : [];
+			for (const message of messages) {
+				if (message.files?.some((f) => f.type === 'excel')) {
+					const excelFile = message.files.find((f) => f.type === 'excel');
+					return $artifactContents.find(
+						(content) => content.type === 'excel' && content.fileId === excelFile.fileId
+					);
+				}
+			}
+			return null;
+	};
+
 	const getContents = () => {
 		const messages = history ? createMessagesList(history, history.currentId) : [];
 		let contents = [];
@@ -849,29 +898,36 @@
 
 				if (htmlContent || cssContent || jsContent) {
 					const renderedContent = `
-                        <!DOCTYPE html>
-                        <html lang="en">
-                        <head>
-                            <meta charset="UTF-8">
-                            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-							<${''}style>
-								body {
-									background-color: white; /* Ensure the iframe has a white background */
-								}
+										<!DOCTYPE html>
+										<html lang="en">
+										<head>
+											<meta charset="UTF-8">
+											<meta name="viewport" content="width=device-width, initial-scale=1.0">
+											<${''}style>
+												body {
+													background-color: white; /* Ensure the iframe has a white background */
+												}
 
-								${cssContent}
-							</${''}style>
-                        </head>
-                        <body>
-                            ${htmlContent}
+												${cssContent}
+											</${''}style>
+										</head>
+										<body>
+											${htmlContent}
 
-							<${''}script>
-                            	${jsContent}
-							</${''}script>
-                        </body>
-                        </html>
-                    `;
-					contents = [...contents, { type: 'iframe', content: renderedContent }];
+											<${''}script>
+												${jsContent}
+											</${''}script>
+										</body>
+										</html>
+									`;
+					
+					// Detect Reveal.js presentations
+					const isPresentation = htmlContent.includes('class="reveal"') || 
+										htmlContent.includes("class='reveal'") ||
+										htmlContent.includes('class="reveal ');
+					
+					const artifactType = isPresentation ? 'presentation' : 'iframe';
+					contents = [...contents, { type: artifactType, content: renderedContent }];
 				} else {
 					// Check for SVG content
 					for (const block of codeBlocks) {
@@ -881,9 +937,66 @@
 					}
 				}
 			}
+			
+			// Check for PPTX artifacts in message content
+			if (message?.content) {
+				// Match <artifact type="pptx" ...>JSON</artifact>
+				const pptxArtifactRegex = /<artifact\s+(?:[^>]*?\s+)?type=["']pptx["'][^>]*>([\s\S]*?)<\/artifact>/gi;
+				let pptxMatch;
+
+				while ((pptxMatch = pptxArtifactRegex.exec(message.content)) !== null) {
+					try {
+						let jsonContent = pptxMatch[1].trim();
+						console.log('[PPTX] Found PPTX artifact, parsing JSON...');
+						// Remove wrapping code blocks if present
+						if (jsonContent.startsWith('```') && jsonContent.endsWith('```')) {
+							jsonContent = jsonContent.replace(/^```(?:json)?\s*/m, '').replace(/\s*```$/m, '');
+						}
+						const slideData = JSON.parse(jsonContent);
+
+						if (slideData && slideData.slides) {
+							console.log('[PPTX] Successfully parsed PPTX artifact with', slideData.slides.length, 'slides');
+							contents = [
+								...contents,
+								{
+									type: 'pptx',
+									title: slideData.title || 'Presentation',
+									slides: slideData.slides
+								}
+							];
+						}
+					} catch (e) {
+						console.error('[PPTX] Failed to parse PPTX artifact:', e);
+					}
+				}
+			}
+
+			// Check for Excel file artifacts
+			if (message?.files) {
+				for (const file of message.files) {
+					if (file.type === 'excel') {
+						contents = [
+							...contents,
+							{
+								type: 'excel',
+								url: file.url,
+								name: file.name,
+								fileId: file.fileId,
+								meta: file.meta
+							}
+						];
+					}
+				}
+			}
 		});
 
 		artifactContents.set(contents);
+
+		// Auto-open artifact panel for PPTX artifacts (like Excel artifacts)
+		if (contents.some((c) => c.type === 'pptx') && !$mobile && !$showArtifacts) {
+			showArtifacts.set(true);
+			showControls.set(true);
+		}
 	};
 
 	//////////////////////////
@@ -2531,6 +2644,26 @@
 										topPadding={true}
 										bottomPadding={files.length > 0}
 										{onSelect}
+										on:openExcelArtifact={(e) => {
+											// Matches the event dispatched from ResponseMessage.svelte
+											const excelArtifact = getArtifact();
+
+											if (excelArtifact) {
+												// Excel already in artifacts, just open it
+												showArtifacts.set(true);
+												showControls.set(true);
+											} else {
+												// Excel not in artifacts, refresh and open
+												getContents();
+												showArtifacts.set(true);
+												showControls.set(true);
+											}
+										}}
+										on:openPptxArtifact={(e) => {
+											getContents();
+											showArtifacts.set(true);
+											showControls.set(true);
+										}}
 									/>
 								</div>
 							</div>

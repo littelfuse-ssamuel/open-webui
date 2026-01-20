@@ -7,10 +7,10 @@ ARG USE_SLIM=false
 ARG USE_PERMISSION_HARDENING=false
 # Tested with cu117 for CUDA 11 and cu121 for CUDA 12 (default)
 ARG USE_CUDA_VER=cu128
-# any sentence transformer model; models to use can be found at https://huggingface.co/models?library=sentence-transformers
-# Leaderboard: https://huggingface.co/spaces/mteb/leaderboard 
+# any sentence transformer model; models to use can be found at https://huggingface. co/models?library=sentence-transformers
+# Leaderboard:  https://huggingface.co/spaces/mteb/leaderboard 
 # for better performance and multilangauge support use "intfloat/multilingual-e5-large" (~2.5GB) or "intfloat/multilingual-e5-base" (~1.5GB)
-# IMPORTANT: If you change the embedding model (sentence-transformers/all-MiniLM-L6-v2) and vice versa, you aren't able to use RAG Chat with your previous documents loaded in the WebUI! You need to re-embed them.
+# IMPORTANT: If you change the embedding model (sentence-transformers/all-MiniLM-L6-v2) and vice versa, you aren't able to use RAG Chat with your previous documents loaded in the WebUI!  You need to re-embed them. 
 ARG USE_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ARG USE_RERANKING_MODEL=""
 ARG USE_AUXILIARY_EMBEDDING_MODEL=TaylorAI/bge-micro-v2
@@ -24,21 +24,30 @@ ARG UID=0
 ARG GID=0
 
 ######## WebUI frontend ########
-FROM --platform=$BUILDPLATFORM node:22-alpine3.20 AS build
+# CUSTOM: Using bookworm instead of alpine for better compatibility
+FROM --platform=$BUILDPLATFORM node:22-bookworm AS build
 ARG BUILD_HASH
-
-# Set Node.js options (heap limit Allocation failed - JavaScript heap out of memory)
-# ENV NODE_OPTIONS="--max-old-space-size=4096"
 
 WORKDIR /app
 
-# to store git revision in build
-RUN apk add --no-cache git
+# CUSTOM: Using apt-get instead of apk for bookworm
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
-RUN npm ci --force
+# CUSTOM: Using npm cache mount and --legacy-peer-deps
+RUN --mount=type=cache,target=/root/.npm \
+    npm install --legacy-peer-deps
 
-COPY . .
+# --- CUSTOM OPTIMIZATION START ---
+# 1. Copy Source Code
+COPY src ./src
+COPY static ./static
+# 2. Copy Scripts (Required for 'prepare-pyodide. js')
+COPY scripts ./scripts
+# 3. Copy Config Files
+COPY svelte.config.js vite.config.ts tsconfig.json tailwind.config.js postcss.config.js pyproject.toml ./
+# --- CUSTOM OPTIMIZATION END ---
+
 ENV APP_BUILD_HASH=${BUILD_HASH}
 RUN npm run build
 
@@ -54,6 +63,7 @@ ARG USE_PERMISSION_HARDENING
 ARG USE_EMBEDDING_MODEL
 ARG USE_RERANKING_MODEL
 ARG USE_AUXILIARY_EMBEDDING_MODEL
+ARG USE_TIKTOKEN_ENCODING_NAME
 ARG UID
 ARG GID
 
@@ -95,14 +105,14 @@ ENV RAG_EMBEDDING_MODEL="$USE_EMBEDDING_MODEL_DOCKER" \
     SENTENCE_TRANSFORMERS_HOME="/app/backend/data/cache/embedding/models"
 
 ## Tiktoken model settings ##
-ENV TIKTOKEN_ENCODING_NAME="cl100k_base" \
+ENV TIKTOKEN_ENCODING_NAME="$USE_TIKTOKEN_ENCODING_NAME" \
     TIKTOKEN_CACHE_DIR="/app/backend/data/cache/tiktoken"
 
 ## Hugging Face download cache ##
 ENV HF_HOME="/app/backend/data/cache/embedding/models"
 
 ## Torch Extensions ##
-# ENV TORCH_EXTENSIONS_DIR="/.cache/torch_extensions"
+# ENV TORCH_EXTENSIONS_DIR="/. cache/torch_extensions"
 
 #### Other models ##########################################################
 
@@ -117,30 +127,34 @@ RUN if [ $UID -ne 0 ]; then \
     adduser --uid $UID --gid $GID --home $HOME --disabled-password --no-create-home app; \
     fi
 
-RUN mkdir -p $HOME/.cache/chroma
+RUN mkdir -p $HOME/. cache/chroma
 RUN echo -n 00000000-0000-0000-0000-000000000000 > $HOME/.cache/chroma/telemetry_user_id
 
 # Make sure the user has access to the app and root directory
 RUN chown -R $UID:$GID /app $HOME
 
 # Install common system dependencies
-RUN apt-get update && \
+# CUSTOM: Using cache mounts for apt
+RUN --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/lib/apt/lists \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
     git build-essential pandoc gcc netcat-openbsd curl jq \
     python3-dev \
-    ffmpeg libsm6 libxext6 \
-    && rm -rf /var/lib/apt/lists/*
+    ffmpeg libsm6 libxext6
 
 # install python dependencies
 COPY --chown=$UID:$GID ./backend/requirements.txt ./requirements.txt
 
-RUN pip3 install --no-cache-dir uv && \
+# CUSTOM: Using pip cache mount and reorganized logic
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install --no-cache-dir uv && \
     if [ "$USE_CUDA" = "true" ]; then \
     # If you use CUDA the whisper and embedding model will be downloaded on first use
     pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/$USE_CUDA_DOCKER_VER --no-cache-dir && \
     uv pip install --system -r requirements.txt --no-cache-dir && \
     python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os.environ['RAG_EMBEDDING_MODEL'], device='cpu')" && \
-    python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os.environ.get('AUXILIARY_EMBEDDING_MODEL', 'TaylorAI/bge-micro-v2'), device='cpu')" && \
+    python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os. environ. get('AUXILIARY_EMBEDDING_MODEL', 'TaylorAI/bge-micro-v2'), device='cpu')" && \
     python -c "import os; from faster_whisper import WhisperModel; WhisperModel(os.environ['WHISPER_MODEL'], device='cpu', compute_type='int8', download_root=os.environ['WHISPER_MODEL_DIR'])"; \
     python -c "import os; import tiktoken; tiktoken.get_encoding(os.environ['TIKTOKEN_ENCODING_NAME'])"; \
     else \
@@ -148,7 +162,7 @@ RUN pip3 install --no-cache-dir uv && \
     uv pip install --system -r requirements.txt --no-cache-dir && \
     if [ "$USE_SLIM" != "true" ]; then \
     python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os.environ['RAG_EMBEDDING_MODEL'], device='cpu')" && \
-    python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os.environ.get('AUXILIARY_EMBEDDING_MODEL', 'TaylorAI/bge-micro-v2'), device='cpu')" && \
+    python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os. environ.get('AUXILIARY_EMBEDDING_MODEL', 'TaylorAI/bge-micro-v2'), device='cpu')" && \
     python -c "import os; from faster_whisper import WhisperModel; WhisperModel(os.environ['WHISPER_MODEL'], device='cpu', compute_type='int8', download_root=os.environ['WHISPER_MODEL_DIR'])"; \
     python -c "import os; import tiktoken; tiktoken.get_encoding(os.environ['TIKTOKEN_ENCODING_NAME'])"; \
     fi; \
@@ -157,10 +171,11 @@ RUN pip3 install --no-cache-dir uv && \
     rm -rf /var/lib/apt/lists/*;
 
 # Install Ollama if requested
-RUN if [ "$USE_OLLAMA" = "true" ]; then \
+# CUSTOM: Added USE_SLIM check
+RUN if [ "$USE_OLLAMA" = "true" ] && [ "$USE_SLIM" != "true" ]; then \
     date +%s > /tmp/ollama_build_hash && \
     echo "Cache broken at timestamp: `cat /tmp/ollama_build_hash`" && \
-    curl -fsSL https://ollama.com/install.sh | sh && \
+    curl -fsSL https://ollama.com/install. sh | sh && \
     rm -rf /var/lib/apt/lists/*; \
     fi
 
@@ -170,11 +185,13 @@ RUN if [ "$USE_OLLAMA" = "true" ]; then \
 
 # copy built frontend files
 COPY --chown=$UID:$GID --from=build /app/build /app/build
-COPY --chown=$UID:$GID --from=build /app/CHANGELOG.md /app/CHANGELOG.md
 COPY --chown=$UID:$GID --from=build /app/package.json /app/package.json
 
+# --- CUSTOM:  Copy CHANGELOG.md directly from context ---
+COPY --chown=$UID:$GID CHANGELOG.md /app/CHANGELOG.md
+
 # copy backend files
-COPY --chown=$UID:$GID ./backend .
+COPY --chown=$UID:$GID ./backend . 
 
 EXPOSE 8080
 

@@ -928,15 +928,19 @@ async def get_user_chat_list_by_tag_name(
 async def get_chat_by_id(
     id: str, user=Depends(get_verified_user), db: Session = Depends(get_session)
 ):
-    chat = Chats.get_chat_by_id_and_user_id(id, user.id, db=db)
-
-    if chat:
-        return ChatResponse(**chat.model_dump())
-
+    # Littelfuse custom: use fresh files method if available
+    if hasattr(Chats, 'get_chat_by_id_with_fresh_files'):
+        chat = Chats.get_chat_by_id_with_fresh_files(id, db=db)
+        if chat and chat.user_id == user.id:
+            return ChatResponse(**chat.model_dump())
     else:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail=ERROR_MESSAGES.NOT_FOUND
-        )
+        chat = Chats.get_chat_by_id_and_user_id(id, user.id, db=db)
+        if chat:
+            return ChatResponse(**chat.model_dump())
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED, detail=ERROR_MESSAGES.NOT_FOUND
+    )
 
 
 ############################

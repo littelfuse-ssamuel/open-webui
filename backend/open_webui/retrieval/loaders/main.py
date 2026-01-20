@@ -3,6 +3,7 @@ import logging
 import ftfy
 import sys
 import json
+from collections.abc import Iterable
 
 from azure.identity import DefaultAzureCredential
 from langchain_community.document_loaders import (
@@ -24,18 +25,18 @@ from langchain_community.document_loaders import (
 from langchain_core.documents import Document
 
 from open_webui.retrieval.loaders.external_document import ExternalDocumentLoader
-
 from open_webui.retrieval.loaders.mistral import MistralLoader
 from open_webui.retrieval.loaders.datalab_marker import DatalabMarkerLoader
 from open_webui.retrieval.loaders.mineru import MinerULoader
-
 
 from open_webui.env import GLOBAL_LOG_LEVEL, REQUESTS_VERIFY
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
 
-known_source_ext = [
+
+# Using set for O(1) lookup performance
+known_source_ext = {
     "go",
     "py",
     "java",
@@ -83,10 +84,26 @@ known_source_ext = [
     "erl",
     "tsx",
     "jsx",
-    "hs",
     "lhs",
     "json",
-]
+    "cfg",
+    "cfm",
+    "cgi",
+    "config",
+    "csv",
+    "html",
+    "kt",
+    "kts",
+    "lisp",
+    "md",
+    "toml",
+    "tsv",
+    "txt",
+    "vb",
+    "xml",
+    "yaml",
+    "yml",
+}
 
 
 class TikaLoader:
@@ -94,7 +111,6 @@ class TikaLoader:
         self.url = url
         self.file_path = file_path
         self.mime_type = mime_type
-
         self.extract_images = extract_images
 
     def load(self) -> list[Document]:
@@ -131,12 +147,24 @@ class TikaLoader:
 
 
 class DoclingLoader:
+    """
+    DoclingLoader with extended parameter support.
+    
+    Supports both simple usage and advanced configuration including:
+    - OCR settings (do_ocr, force_ocr, ocr_engine, ocr_lang)
+    - Picture description (local and API modes)
+    - PDF backend selection
+    - Table extraction modes
+    - Pipeline configuration
+    
+    Littelfuse extended implementation.
+    """
+
     def __init__(self, url, api_key=None, file_path=None, mime_type=None, params=None):
         self.url = url.rstrip("/")
         self.api_key = api_key
         self.file_path = file_path
         self.mime_type = mime_type
-
         self.params = params or {}
 
     def load(self) -> list[Document]:
@@ -145,21 +173,77 @@ class DoclingLoader:
             if self.api_key:
                 headers["X-Api-Key"] = f"Bearer {self.api_key}"
 
+            files = {
+                "files": (
+                    self.file_path,
+                    f,
+                    self.mime_type or "application/octet-stream",
+                )
+            }
+
+            # Build request params
+            request_params = {"image_export_mode": "placeholder"}
+
+            if self.params:
+                # Picture description settings
+                if self.params.get("do_picture_description"):
+                    request_params["do_picture_description"] = self.params.get(
+                        "do_picture_description"
+                    )
+
+                    picture_description_mode = self.params.get(
+                        "picture_description_mode", ""
+                    ).lower()
+
+                    if picture_description_mode == "local" and self.params.get(
+                        "picture_description_local", {}
+                    ):
+                        request_params["picture_description_local"] = json.dumps(
+                            self.params.get("picture_description_local", {})
+                        )
+                    elif picture_description_mode == "api" and self.params.get(
+                        "picture_description_api", {}
+                    ):
+                        request_params["picture_description_api"] = json.dumps(
+                            self.params.get("picture_description_api", {})
+                        )
+
+                # OCR settings
+                if self.params.get("do_ocr") is not None:
+                    request_params["do_ocr"] = self.params.get("do_ocr")
+
+                if self.params.get("force_ocr") is not None:
+                    request_params["force_ocr"] = self.params.get("force_ocr")
+
+                if (
+                    self.params.get("do_ocr")
+                    and self.params.get("ocr_engine")
+                    and self.params.get("ocr_lang")
+                ):
+                    request_params["ocr_engine"] = self.params.get("ocr_engine")
+                    request_params["ocr_lang"] = [
+                        lang.strip()
+                        for lang in self.params.get("ocr_lang").split(",")
+                        if lang.strip()
+                    ]
+
+                # Additional settings
+                if self.params.get("pdf_backend"):
+                    request_params["pdf_backend"] = self.params.get("pdf_backend")
+
+                if self.params.get("table_mode"):
+                    request_params["table_mode"] = self.params.get("table_mode")
+
+                if self.params.get("pipeline"):
+                    request_params["pipeline"] = self.params.get("pipeline")
+
             r = requests.post(
                 f"{self.url}/v1/convert/file",
-                files={
-                    "files": (
-                        self.file_path,
-                        f,
-                        self.mime_type or "application/octet-stream",
-                    )
-                },
-                data={
-                    "image_export_mode": "placeholder",
-                    **self.params,
-                },
+                files=files,
+                data=request_params,
                 headers=headers,
             )
+
         if r.ok:
             result = r.json()
             document_data = result.get("document", {})
@@ -182,6 +266,15 @@ class DoclingLoader:
 
 
 class Loader:
+    """
+    Main document loader that dispatches to appropriate engine-specific loaders.
+    
+    Supports returning image references when using loaders that extract images
+    (e.g., ExternalDocumentLoader with extract_images=True).
+    
+    Littelfuse extended implementation with image_refs support.
+    """
+
     def __init__(self, engine: str = "", **kwargs):
         self.engine = engine
         self.user = kwargs.get("user", None)
@@ -189,16 +282,72 @@ class Loader:
 
     def load(
         self, filename: str, file_content_type: str, file_path: str
-    ) -> list[Document]:
+    ) -> list[Document] | tuple[list[Document], list[str]]:
+        """
+        Load a document and optionally extract images.
+        
+        Returns:
+            Either a list of Documents, or a tuple of (documents, image_refs)
+            if the loader supports image extraction.
+        """
         loader = self._get_loader(filename, file_content_type, file_path)
-        docs = loader.load()
+        log.info(
+            f"Loader.load: engine='{self.engine}', loader_type={type(loader).__name__}"
+        )
+        raw_result = loader.load()
+        log.info(
+            f"Loader.load: raw_result type={type(raw_result)}, is_tuple={isinstance(raw_result, tuple)}"
+        )
 
-        return [
-            Document(
-                page_content=ftfy.fix_text(doc.page_content), metadata=doc.metadata
+        # Check if result includes image_refs (tuple format from ExternalDocumentLoader)
+        has_image_refs = isinstance(raw_result, tuple) and len(raw_result) == 2
+        if has_image_refs:
+            docs, image_refs = raw_result
+            log.info(
+                f"Loader.load: Extracted tuple with {len(docs)} docs and {len(image_refs)} image_refs"
             )
-            for doc in docs
-        ]
+        else:
+            docs = raw_result
+            image_refs = []
+            log.info(f"Loader.load: Non-tuple result, raw_result type: {type(raw_result)}")
+
+        # Flatten nested document structures
+        flat_docs: list[Document] = []
+
+        def _flatten(items):
+            for item in items:
+                # Avoid treating strings/bytes/Documents as generic iterables
+                if isinstance(item, Iterable) and not isinstance(
+                    item, (str, bytes, Document)
+                ):
+                    yield from _flatten(item)
+                else:
+                    yield item
+
+        for item in _flatten(docs):
+            if isinstance(item, Document):
+                flat_docs.append(
+                    Document(
+                        page_content=ftfy.fix_text(item.page_content),
+                        metadata=item.metadata,
+                    )
+                )
+            else:
+                log.warning(
+                    "Loader returned non-Document item of type %s; skipping: %r",
+                    type(item),
+                    item,
+                )
+
+        # Return tuple if we originally had image_refs
+        if has_image_refs:
+            log.info(
+                f"Loader.load: Returning tuple with {len(flat_docs)} docs and {len(image_refs)} image_refs"
+            )
+            return flat_docs, image_refs
+
+        log.info(f"Loader.load: Returning list with {len(flat_docs)} docs (no image_refs)")
+        return flat_docs
 
     def _is_text_file(self, file_ext: str, file_content_type: str) -> bool:
         return file_ext in known_source_ext or (
@@ -210,60 +359,121 @@ class Loader:
 
     def _get_loader(self, filename: str, file_content_type: str, file_path: str):
         file_ext = filename.split(".")[-1].lower()
+        # Normalize engine to lowercase for consistent matching
+        engine = (self.engine or "").strip().lower()
+        log.info(
+            f"_get_loader: original_engine='{self.engine}', normalized_engine='{engine}', "
+            f"file_ext='{file_ext}', content_type='{file_content_type}'"
+        )
 
-        if (
-            self.engine == "external"
-            and self.kwargs.get("EXTERNAL_DOCUMENT_LOADER_URL")
-            and self.kwargs.get("EXTERNAL_DOCUMENT_LOADER_API_KEY")
-        ):
+        # ===========================================
+        # Engine-specific loaders
+        # ===========================================
+
+        if engine == "youtube":
+            loader = YoutubeLoader.from_youtube_url(
+                file_path, add_video_info=True, language="en"
+            )
+
+        elif engine in ("web", "external"):
+            # ExternalDocumentLoader with image extraction support
+            log.info(
+                f"_get_loader: Using ExternalDocumentLoader with extract_images={self.kwargs.get('PDF_EXTRACT_IMAGES')}"
+            )
             loader = ExternalDocumentLoader(
-                file_path=file_path,
                 url=self.kwargs.get("EXTERNAL_DOCUMENT_LOADER_URL"),
                 api_key=self.kwargs.get("EXTERNAL_DOCUMENT_LOADER_API_KEY"),
+                file_path=file_path,
                 mime_type=file_content_type,
                 user=self.user,
+                extract_images=self.kwargs.get("PDF_EXTRACT_IMAGES"),
             )
-        elif self.engine == "tika" and self.kwargs.get("TIKA_SERVER_URL"):
+
+        elif engine == "azure_document_intelligence" or engine == "document_intelligence":
+            # Support both naming conventions
+            endpoint = self.kwargs.get(
+                "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT"
+            ) or self.kwargs.get("DOCUMENT_INTELLIGENCE_ENDPOINT")
+            api_key = self.kwargs.get(
+                "AZURE_DOCUMENT_INTELLIGENCE_API_KEY"
+            ) or self.kwargs.get("DOCUMENT_INTELLIGENCE_KEY")
+            model = self.kwargs.get(
+                "AZURE_DOCUMENT_INTELLIGENCE_MODEL"
+            ) or self.kwargs.get("DOCUMENT_INTELLIGENCE_MODEL")
+
+            if api_key and api_key != "":
+                loader = AzureAIDocumentIntelligenceLoader(
+                    file_path=file_path,
+                    api_endpoint=endpoint,
+                    api_key=api_key,
+                    api_model=model,
+                )
+            else:
+                loader = AzureAIDocumentIntelligenceLoader(
+                    file_path=file_path,
+                    api_endpoint=endpoint,
+                    azure_credential=DefaultAzureCredential(),
+                    api_model=model,
+                )
+
+        elif engine == "tika":
+            tika_url = self.kwargs.get("TIKA_URL") or self.kwargs.get("TIKA_SERVER_URL")
             if self._is_text_file(file_ext, file_content_type):
                 loader = TextLoader(file_path, autodetect_encoding=True)
             else:
                 loader = TikaLoader(
-                    url=self.kwargs.get("TIKA_SERVER_URL"),
+                    url=tika_url,
                     file_path=file_path,
+                    mime_type=file_content_type,
                     extract_images=self.kwargs.get("PDF_EXTRACT_IMAGES"),
                 )
-        elif (
-            self.engine == "datalab_marker"
-            and self.kwargs.get("DATALAB_MARKER_API_KEY")
-            and file_ext
-            in [
-                "pdf",
-                "xls",
-                "xlsx",
-                "ods",
-                "doc",
-                "docx",
-                "odt",
-                "ppt",
-                "pptx",
-                "odp",
-                "html",
-                "epub",
-                "png",
-                "jpeg",
-                "jpg",
-                "webp",
-                "gif",
-                "tiff",
-            ]
-        ):
+
+        elif engine == "docling":
+            docling_url = self.kwargs.get("DOCLING_URL") or self.kwargs.get(
+                "DOCLING_SERVER_URL"
+            )
+            if self._is_text_file(file_ext, file_content_type):
+                loader = TextLoader(file_path, autodetect_encoding=True)
+            else:
+                # Parse DOCLING_PARAMS if it's a string
+                params = self.kwargs.get("DOCLING_PARAMS", {})
+                if not isinstance(params, dict):
+                    try:
+                        params = json.loads(params)
+                    except json.JSONDecodeError:
+                        log.error("Invalid DOCLING_PARAMS format, expected JSON object")
+                        params = {}
+
+                loader = DoclingLoader(
+                    url=docling_url,
+                    api_key=self.kwargs.get("DOCLING_API_KEY"),
+                    file_path=file_path,
+                    mime_type=file_content_type,
+                    params=params,
+                )
+
+        elif engine in ("mistral", "mistral_ocr"):
+            # Support both naming conventions
+            base_url = self.kwargs.get("MISTRAL_OCR_API_BASE_URL")
+            api_key = self.kwargs.get("MISTRAL_API_KEY") or self.kwargs.get(
+                "MISTRAL_OCR_API_KEY"
+            )
+
+            loader = MistralLoader(
+                base_url=base_url,
+                api_key=api_key,
+                file_path=file_path,
+            )
+
+        elif engine == "datalab_marker":
+            api_key = self.kwargs.get("DATALAB_MARKER_API_KEY")
             api_base_url = self.kwargs.get("DATALAB_MARKER_API_BASE_URL", "")
             if not api_base_url or api_base_url.strip() == "":
-                api_base_url = "https://www.datalab.to/api/v1/marker"  # https://github.com/open-webui/open-webui/pull/16867#issuecomment-3218424349
+                api_base_url = "https://www.datalab.to/api/v1/marker"
 
             loader = DatalabMarkerLoader(
                 file_path=file_path,
-                api_key=self.kwargs["DATALAB_MARKER_API_KEY"],
+                api_key=api_key,
                 api_base_url=api_base_url,
                 additional_config=self.kwargs.get("DATALAB_MARKER_ADDITIONAL_CONFIG"),
                 use_llm=self.kwargs.get("DATALAB_MARKER_USE_LLM", False),
@@ -281,57 +491,8 @@ class Loader:
                     "DATALAB_MARKER_OUTPUT_FORMAT", "markdown"
                 ),
             )
-        elif self.engine == "docling" and self.kwargs.get("DOCLING_SERVER_URL"):
-            if self._is_text_file(file_ext, file_content_type):
-                loader = TextLoader(file_path, autodetect_encoding=True)
-            else:
-                # Build params for DoclingLoader
-                params = self.kwargs.get("DOCLING_PARAMS", {})
-                if not isinstance(params, dict):
-                    try:
-                        params = json.loads(params)
-                    except json.JSONDecodeError:
-                        log.error("Invalid DOCLING_PARAMS format, expected JSON object")
-                        params = {}
 
-                loader = DoclingLoader(
-                    url=self.kwargs.get("DOCLING_SERVER_URL"),
-                    api_key=self.kwargs.get("DOCLING_API_KEY", None),
-                    file_path=file_path,
-                    mime_type=file_content_type,
-                    params=params,
-                )
-        elif (
-            self.engine == "document_intelligence"
-            and self.kwargs.get("DOCUMENT_INTELLIGENCE_ENDPOINT") != ""
-            and (
-                file_ext in ["pdf", "docx", "ppt", "pptx"]
-                or file_content_type
-                in [
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    "application/vnd.ms-powerpoint",
-                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                ]
-            )
-        ):
-            if self.kwargs.get("DOCUMENT_INTELLIGENCE_KEY") != "":
-                loader = AzureAIDocumentIntelligenceLoader(
-                    file_path=file_path,
-                    api_endpoint=self.kwargs.get("DOCUMENT_INTELLIGENCE_ENDPOINT"),
-                    api_key=self.kwargs.get("DOCUMENT_INTELLIGENCE_KEY"),
-                    api_model=self.kwargs.get("DOCUMENT_INTELLIGENCE_MODEL"),
-                )
-            else:
-                loader = AzureAIDocumentIntelligenceLoader(
-                    file_path=file_path,
-                    api_endpoint=self.kwargs.get("DOCUMENT_INTELLIGENCE_ENDPOINT"),
-                    azure_credential=DefaultAzureCredential(),
-                    api_model=self.kwargs.get("DOCUMENT_INTELLIGENCE_MODEL"),
-                )
-        elif self.engine == "mineru" and file_ext in [
-            "pdf"
-        ]:  # MinerU currently only supports PDF
-
+        elif engine == "mineru":
             mineru_timeout = self.kwargs.get("MINERU_API_TIMEOUT", 300)
             if mineru_timeout:
                 try:
@@ -342,23 +503,23 @@ class Loader:
             loader = MinerULoader(
                 file_path=file_path,
                 api_mode=self.kwargs.get("MINERU_API_MODE", "local"),
-                api_url=self.kwargs.get("MINERU_API_URL", "http://localhost:8000"),
+                api_url=self.kwargs.get("MINERU_API_URL")
+                or self.kwargs.get("MINERU_LOCAL_API_URL", "http://localhost:8000"),
                 api_key=self.kwargs.get("MINERU_API_KEY", ""),
                 params=self.kwargs.get("MINERU_PARAMS", {}),
                 timeout=mineru_timeout,
             )
-        elif (
-            self.engine == "mistral_ocr"
-            and self.kwargs.get("MISTRAL_OCR_API_KEY") != ""
-            and file_ext
-            in ["pdf"]  # Mistral OCR currently only supports PDF and images
-        ):
-            loader = MistralLoader(
-                base_url=self.kwargs.get("MISTRAL_OCR_API_BASE_URL"),
-                api_key=self.kwargs.get("MISTRAL_OCR_API_KEY"),
-                file_path=file_path,
-            )
+
         else:
+            # ===========================================
+            # No specific engine matched - file-type-specific loaders
+            # WARNING: These loaders do NOT return image_refs tuple
+            # ===========================================
+            log.warning(
+                f"_get_loader: No engine matched (engine='{engine}'), using file-type-specific "
+                f"loader for ext='{file_ext}'. Image extraction will NOT return image_refs."
+            )
+
             if file_ext == "pdf":
                 loader = PyPDFLoader(
                     file_path, extract_images=self.kwargs.get("PDF_EXTRACT_IMAGES")

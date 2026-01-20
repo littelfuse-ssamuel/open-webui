@@ -100,6 +100,8 @@ azure-ai-documentintelligence==1.0.2
 azure-identity==1.25.1
 azure-storage-blob==12.27.1
 azure-search-documents==11.6.0
+# CUSTOM:  Keeping azure-storage-file-share from your fork
+azure-storage-file-share==12.23.0
 
 ## Google Drive
 google-api-python-client
@@ -119,7 +121,7 @@ boto3==1.42.21
 
 pymilvus==2.6.6
 qdrant-client==1.16.2
-playwright==1.57.0 # Caution: version must match docker-compose.playwright.yaml - Update the docker-compose.yaml if necessary
+playwright==1.57.0 # Caution: version must match docker-compose. playwright.yaml - Update the docker-compose.yaml if necessary
 elasticsearch==9.2.1
 pinecone==6.0.2
 oracledb==3.4.1

@@ -3,6 +3,7 @@
 	import dayjs from 'dayjs';
 
 	import { createEventDispatcher, onDestroy } from 'svelte';
+
 	import { onMount, tick, getContext } from 'svelte';
 	import type { Writable } from 'svelte/store';
 	import type { i18n as i18nType, t } from 'i18next';
@@ -577,7 +578,6 @@
 		if (buttonsContainerElement) {
 			buttonsContainerElement.addEventListener('wheel', buttonsWheelHandler);
 		}
-
 		if (contentContainerElement) {
 			contentContainerElement.addEventListener('copy', contentCopyHandler);
 		}
@@ -587,7 +587,6 @@
 		if (buttonsContainerElement) {
 			buttonsContainerElement.removeEventListener('wheel', buttonsWheelHandler);
 		}
-
 		if (contentContainerElement) {
 			contentContainerElement.removeEventListener('copy', contentCopyHandler);
 		}
@@ -783,11 +782,10 @@
 									onTaskClick={async (e) => {
 										console.log(e);
 									}}
-									onSourceClick={async (id) => {
-										console.log(id);
-
+									onSourceClick={async (id, idx) => {
+										console.log(id, idx);
 										if (citationsElement) {
-											citationsElement?.showSourceModal(id);
+											citationsElement?.showSourceModal(idx - 1);
 										}
 									}}
 									onAddMessages={({ modelId, parentId, messages }) => {
@@ -797,7 +795,6 @@
 										history.messages[message.id].content = history.messages[
 											message.id
 										].content.replace(raw, raw.replace(oldContent, newContent));
-
 										updateChat();
 									}}
 								/>
@@ -805,6 +802,55 @@
 
 							{#if message?.error}
 								<Error content={message?.error?.content ?? message.content} />
+							{/if}
+
+							<!-- Excel file attachments (Littelfuse custom) -->
+							{#if message?.files?.some(f => f.type === 'excel')}
+								<div class="excel-attachments mt-2 flex flex-wrap gap-2">
+									{#each message.files.filter(f => f.type === 'excel') as excelFile, idx}
+										<button
+											class="excel-attachment-btn flex items-center gap-2 px-3 py-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg hover:bg-green-100 dark:hover:bg-green-900/40 transition-colors"
+											on:click={() => {
+												dispatch('openExcelArtifact', { file: excelFile, index: idx });
+											}}
+											title="Click to view spreadsheet"
+										>
+											<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-green-600 dark:text-green-400">
+												<path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+												<polyline points="14 2 14 8 20 8"/>
+												<path d="M8 13h2"/>
+												<path d="M8 17h2"/>
+												<path d="M14 13h2"/>
+												<path d="M14 17h2"/>
+											</svg>
+											<span class="text-sm font-medium text-green-700 dark:text-green-300 truncate max-w-[200px]">
+												{excelFile.name || 'Spreadsheet'}
+											</span>
+										</button>
+									{/each}
+								</div>
+							{/if}
+
+							<!-- PPTX artifact attachments (Littelfuse custom) -->
+							{#if message?.content?.includes('<artifact') && message?.content?.includes('type="pptx"')}
+								<div class="pptx-attachments mt-2 flex flex-wrap gap-2">
+									<button
+										class="pptx-attachment-btn flex items-center gap-2 px-3 py-2 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg hover:bg-orange-100 dark:hover:bg-orange-900/40 transition-colors"
+										on:click={() => {
+											dispatch('openPptxArtifact', {});
+										}}
+										title="Click to view presentation"
+									>
+										<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-orange-600 dark:text-orange-400">
+											<path d="M2 3h20v18H2z"/>
+											<path d="M2 7h20"/>
+											<path d="M6 3v4"/>
+										</svg>
+										<span class="text-sm font-medium text-orange-700 dark:text-orange-300">
+											View Presentation
+										</span>
+									</button>
+								</div>
 							{/if}
 
 							{#if (message?.sources || message?.citations) && (model?.info?.meta?.capabilities?.citations ?? true)}
