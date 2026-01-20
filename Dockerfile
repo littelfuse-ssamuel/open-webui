@@ -7,10 +7,10 @@ ARG USE_SLIM=false
 ARG USE_PERMISSION_HARDENING=false
 # Tested with cu117 for CUDA 11 and cu121 for CUDA 12 (default)
 ARG USE_CUDA_VER=cu128
-# any sentence transformer model; models to use can be found at https://huggingface. co/models?library=sentence-transformers
-# Leaderboard:  https://huggingface.co/spaces/mteb/leaderboard 
+# any sentence transformer model; models to use can be found at https://huggingface.co/models?library=sentence-transformers
+# Leaderboard: https://huggingface.co/spaces/mteb/leaderboard
 # for better performance and multilangauge support use "intfloat/multilingual-e5-large" (~2.5GB) or "intfloat/multilingual-e5-base" (~1.5GB)
-# IMPORTANT: If you change the embedding model (sentence-transformers/all-MiniLM-L6-v2) and vice versa, you aren't able to use RAG Chat with your previous documents loaded in the WebUI!  You need to re-embed them. 
+# IMPORTANT: If you change the embedding model (sentence-transformers/all-MiniLM-L6-v2) and vice versa, you aren't able to use RAG Chat with your previous documents loaded in the WebUI! You need to re-embed them.
 ARG USE_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ARG USE_RERANKING_MODEL=""
 ARG USE_AUXILIARY_EMBEDDING_MODEL=TaylorAI/bge-micro-v2
@@ -42,7 +42,7 @@ RUN --mount=type=cache,target=/root/.npm \
 # 1. Copy Source Code
 COPY src ./src
 COPY static ./static
-# 2. Copy Scripts (Required for 'prepare-pyodide. js')
+# 2. Copy Scripts (Required for 'prepare-pyodide.js')
 COPY scripts ./scripts
 # 3. Copy Config Files
 COPY svelte.config.js vite.config.ts tsconfig.json tailwind.config.js postcss.config.js pyproject.toml ./
@@ -112,9 +112,7 @@ ENV TIKTOKEN_ENCODING_NAME="$USE_TIKTOKEN_ENCODING_NAME" \
 ENV HF_HOME="/app/backend/data/cache/embedding/models"
 
 ## Torch Extensions ##
-# ENV TORCH_EXTENSIONS_DIR="/. cache/torch_extensions"
-
-#### Other models ##########################################################
+# ENV TORCH_EXTENSIONS_DIR="/.cache/torch_extensions"
 
 WORKDIR /app/backend
 
@@ -127,7 +125,7 @@ RUN if [ $UID -ne 0 ]; then \
     adduser --uid $UID --gid $GID --home $HOME --disabled-password --no-create-home app; \
     fi
 
-RUN mkdir -p $HOME/. cache/chroma
+RUN mkdir -p $HOME/.cache/chroma
 RUN echo -n 00000000-0000-0000-0000-000000000000 > $HOME/.cache/chroma/telemetry_user_id
 
 # Make sure the user has access to the app and root directory
@@ -154,7 +152,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/$USE_CUDA_DOCKER_VER --no-cache-dir && \
     uv pip install --system -r requirements.txt --no-cache-dir && \
     python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os.environ['RAG_EMBEDDING_MODEL'], device='cpu')" && \
-    python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os. environ. get('AUXILIARY_EMBEDDING_MODEL', 'TaylorAI/bge-micro-v2'), device='cpu')" && \
+    python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os.environ.get('AUXILIARY_EMBEDDING_MODEL', 'TaylorAI/bge-micro-v2'), device='cpu')" && \
     python -c "import os; from faster_whisper import WhisperModel; WhisperModel(os.environ['WHISPER_MODEL'], device='cpu', compute_type='int8', download_root=os.environ['WHISPER_MODEL_DIR'])"; \
     python -c "import os; import tiktoken; tiktoken.get_encoding(os.environ['TIKTOKEN_ENCODING_NAME'])"; \
     else \
@@ -162,56 +160,4 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     uv pip install --system -r requirements.txt --no-cache-dir && \
     if [ "$USE_SLIM" != "true" ]; then \
     python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os.environ['RAG_EMBEDDING_MODEL'], device='cpu')" && \
-    python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os. environ.get('AUXILIARY_EMBEDDING_MODEL', 'TaylorAI/bge-micro-v2'), device='cpu')" && \
-    python -c "import os; from faster_whisper import WhisperModel; WhisperModel(os.environ['WHISPER_MODEL'], device='cpu', compute_type='int8', download_root=os.environ['WHISPER_MODEL_DIR'])"; \
-    python -c "import os; import tiktoken; tiktoken.get_encoding(os.environ['TIKTOKEN_ENCODING_NAME'])"; \
-    fi; \
-    fi; \
-    mkdir -p /app/backend/data && chown -R $UID:$GID /app/backend/data/ && \
-    rm -rf /var/lib/apt/lists/*;
-
-# Install Ollama if requested
-# CUSTOM: Added USE_SLIM check
-RUN if [ "$USE_OLLAMA" = "true" ] && [ "$USE_SLIM" != "true" ]; then \
-    date +%s > /tmp/ollama_build_hash && \
-    echo "Cache broken at timestamp: `cat /tmp/ollama_build_hash`" && \
-    curl -fsSL https://ollama.com/install. sh | sh && \
-    rm -rf /var/lib/apt/lists/*; \
-    fi
-
-# copy embedding weight from build
-# RUN mkdir -p /root/.cache/chroma/onnx_models/all-MiniLM-L6-v2
-# COPY --from=build /app/onnx /root/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx
-
-# copy built frontend files
-COPY --chown=$UID:$GID --from=build /app/build /app/build
-COPY --chown=$UID:$GID --from=build /app/package.json /app/package.json
-
-# --- CUSTOM:  Copy CHANGELOG.md directly from context ---
-COPY --chown=$UID:$GID CHANGELOG.md /app/CHANGELOG.md
-
-# copy backend files
-COPY --chown=$UID:$GID ./backend . 
-
-EXPOSE 8080
-
-HEALTHCHECK CMD curl --silent --fail http://localhost:${PORT:-8080}/health | jq -ne 'input.status == true' || exit 1
-
-# Minimal, atomic permission hardening for OpenShift (arbitrary UID):
-# - Group 0 owns /app and /root
-# - Directories are group-writable and have SGID so new files inherit GID 0
-RUN if [ "$USE_PERMISSION_HARDENING" = "true" ]; then \
-    set -eux; \
-    chgrp -R 0 /app /root || true; \
-    chmod -R g+rwX /app /root || true; \
-    find /app -type d -exec chmod g+s {} + || true; \
-    find /root -type d -exec chmod g+s {} + || true; \
-    fi
-
-USER $UID:$GID
-
-ARG BUILD_HASH
-ENV WEBUI_BUILD_VERSION=${BUILD_HASH}
-ENV DOCKER=true
-
-CMD [ "bash", "start.sh"]
+    python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os.environ.get('AUXILIARY_EMBEDDIN
