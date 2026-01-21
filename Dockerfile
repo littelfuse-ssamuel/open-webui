@@ -78,11 +78,10 @@ ENV RAG_EMBEDDING_MODEL="$USE_EMBEDDING_MODEL" \
 WORKDIR /app/backend
 
 # Install system deps needed for pip packages
-RUN --mount=type=cache,target=/var/cache/apt \
-    --mount=type=cache,target=/var/lib/apt/lists \
-    apt-get update && \
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    git build-essential gcc python3-dev
+    git build-essential gcc python3-dev && \
+    rm -rf /var/lib/apt/lists/*
 
 # ONLY copy requirements.txt - this is the cache key
 COPY ./backend/requirements.txt ./requirements.txt
@@ -184,13 +183,12 @@ RUN echo -n 00000000-0000-0000-0000-000000000000 > $HOME/.cache/chroma/telemetry
 # Make sure the user has access to the app and root directory
 RUN chown -R $UID:$GID /app $HOME
 
-# Install ONLY runtime system dependencies (not build tools)
-RUN --mount=type=cache,target=/var/cache/apt \
-    --mount=type=cache,target=/var/lib/apt/lists \
-    apt-get update && \
+# Install runtime system dependencies
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    pandoc netcat-openbsd curl jq \
-    ffmpeg libsm6 libxext6
+    git pandoc netcat-openbsd curl jq \
+    ffmpeg libsm6 libxext6 && \
+    rm -rf /var/lib/apt/lists/*
 
 # COPY Python packages from deps stage (this is the magic - cached!)
 COPY --from=python-deps /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
