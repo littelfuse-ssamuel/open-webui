@@ -919,12 +919,53 @@ def process_rtf(file_bytes: bytes, filename: str) -> tuple[str, int]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process RTF: {e}")
 
+# Text-based file extensions that can be read as plain text
+TEXT_FILE_EXTENSIONS = {
+    # Plain text
+    '.txt', '.text',
+    # Code files
+    '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.cpp', '.h', '.hpp',
+    '.cs', '.go', '.rs', '.rb', '.php', '.swift', '.kt', '.scala',
+    '.sh', '.bash', '.zsh', '.ps1', '.bat', '.cmd',
+    # Config/Data files
+    '.json', '.yaml', '.yml', '.xml', '.toml', '.ini', '.cfg', '.conf', '.env',
+    # Markup files
+    '.md', '.markdown', '.rst', '.tex',
+    # Web files
+    '.html', '.htm', '.css', '.scss', '.sass', '.less',
+    # Other text files
+    '.csv', '.tsv', '.log', '.sql',
+    # Dotfiles (without extension, matched by name)
+    '.gitignore', '.dockerignore', '.editorconfig', '.gitattributes', '.npmrc',
+    '.eslintrc', '.prettierrc', '.babelrc',
+}
+
+def process_text_file(file_bytes: bytes, filename: str, file_ext: str) -> tuple[str, int]:
+    """Process plain text and code files."""
+    logger.info(f"Processing text file: {filename}")
+    try:
+        # Try UTF-8 first, fall back to latin-1
+        try:
+            content = file_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            content = file_bytes.decode('latin-1')
+        
+        content = normalize_text_encoding(content)
+        
+        # Estimate page count (roughly 3000 chars per page)
+        page_count = max(1, len(content) // 3000)
+        
+        return content.strip(), page_count
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process text file: {e}")
+
 def process_non_pdf_fast(file_bytes: bytes, filename: str, file_ext: str) -> tuple[str, int]:
     logger.info(f"Processing {file_ext} file: {filename}")
     if file_ext == ".docx": return process_docx(file_bytes, filename)
     elif file_ext in [".xlsx", ".xlsm"]: return process_xlsx(file_bytes, filename)
     elif file_ext == ".pptx": return process_pptx(file_bytes, filename)
     elif file_ext == ".rtf": return process_rtf(file_bytes, filename)
+    elif file_ext in TEXT_FILE_EXTENSIONS: return process_text_file(file_bytes, filename, file_ext)
     else: raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_ext}")
 
 # =============================================================================
