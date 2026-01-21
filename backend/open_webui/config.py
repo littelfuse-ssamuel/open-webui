@@ -2735,6 +2735,84 @@ DOCLING_PARAMS = PersistentConfig(
     docling_params,
 )
 
+DOCLING_DO_OCR = PersistentConfig(
+    "DOCLING_DO_OCR",
+    "rag.docling_do_ocr",
+    os.environ.get("DOCLING_DO_OCR", "False").lower() == "true",
+)
+
+DOCLING_FORCE_OCR = PersistentConfig(
+    "DOCLING_FORCE_OCR",
+    "rag.docling_force_ocr",
+    os.environ.get("DOCLING_FORCE_OCR", "False").lower() == "true",
+)
+
+DOCLING_OCR_ENGINE = PersistentConfig(
+    "DOCLING_OCR_ENGINE",
+    "rag.docling_ocr_engine",
+    os.getenv("DOCLING_OCR_ENGINE", ""),
+)
+
+DOCLING_OCR_LANG = PersistentConfig(
+    "DOCLING_OCR_LANG",
+    "rag.docling_ocr_lang",
+    os.getenv("DOCLING_OCR_LANG", ""),
+)
+
+DOCLING_PDF_BACKEND = PersistentConfig(
+    "DOCLING_PDF_BACKEND",
+    "rag.docling_pdf_backend",
+    os.getenv("DOCLING_PDF_BACKEND", ""),
+)
+
+DOCLING_TABLE_MODE = PersistentConfig(
+    "DOCLING_TABLE_MODE",
+    "rag.docling_table_mode",
+    os.getenv("DOCLING_TABLE_MODE", ""),
+)
+
+DOCLING_PIPELINE = PersistentConfig(
+    "DOCLING_PIPELINE",
+    "rag.docling_pipeline",
+    os.getenv("DOCLING_PIPELINE", ""),
+)
+
+DOCLING_DO_PICTURE_DESCRIPTION = PersistentConfig(
+    "DOCLING_DO_PICTURE_DESCRIPTION",
+    "rag.docling_do_picture_description",
+    os.environ.get("DOCLING_DO_PICTURE_DESCRIPTION", "False").lower() == "true",
+)
+
+DOCLING_PICTURE_DESCRIPTION_MODE = PersistentConfig(
+    "DOCLING_PICTURE_DESCRIPTION_MODE",
+    "rag.docling_picture_description_mode",
+    os.getenv("DOCLING_PICTURE_DESCRIPTION_MODE", ""),
+)
+
+docling_picture_description_local = os.getenv("DOCLING_PICTURE_DESCRIPTION_LOCAL", "")
+try:
+    docling_picture_description_local = json.loads(docling_picture_description_local)
+except json.JSONDecodeError:
+    docling_picture_description_local = {}
+
+DOCLING_PICTURE_DESCRIPTION_LOCAL = PersistentConfig(
+    "DOCLING_PICTURE_DESCRIPTION_LOCAL",
+    "rag.docling_picture_description_local",
+    docling_picture_description_local,
+)
+
+docling_picture_description_api = os.getenv("DOCLING_PICTURE_DESCRIPTION_API", "")
+try:
+    docling_picture_description_api = json.loads(docling_picture_description_api)
+except json.JSONDecodeError:
+    docling_picture_description_api = {}
+
+DOCLING_PICTURE_DESCRIPTION_API = PersistentConfig(
+    "DOCLING_PICTURE_DESCRIPTION_API",
+    "rag.docling_picture_description_api",
+    docling_picture_description_api,
+)
+
 DOCUMENT_INTELLIGENCE_ENDPOINT = PersistentConfig(
     "DOCUMENT_INTELLIGENCE_ENDPOINT",
     "rag.document_intelligence_endpoint",
