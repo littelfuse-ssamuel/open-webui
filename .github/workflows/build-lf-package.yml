@@ -211,7 +211,6 @@ jobs:
           type=semver,pattern={{version}},prefix=lf-v
           type=raw,value=lf-latest,enable={{is_default_branch}}
     
-    # KEY OPTIMIZATION: Use GitHub Actions cache as primary, registry as fallback
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
@@ -221,13 +220,9 @@ jobs:
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         platforms: linux/amd64
-        # Multi-tier caching strategy
-        cache-from: |
-          type=gha
-          type=registry,ref=ghcr.io/${{ github.repository }}-lf:buildcache
-        cache-to: |
-          type=gha,mode=max
-          type=registry,ref=ghcr.io/${{ github.repository }}-lf:buildcache,mode=max
+        # Registry cache (works on GHES)
+        cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-lf:buildcache
+        cache-to: type=registry,ref=ghcr.io/${{ github.repository }}-lf:buildcache,mode=max
         build-args: |
           BUILD_HASH=${{ steps.compute_hash.outputs.build_hash }}
           BUILDKIT_INLINE_CACHE=1
@@ -289,12 +284,9 @@ jobs:
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-        cache-from: |
-          type=gha
-          type=registry,ref=ghcr.io/${{ github.repository }}-extloader:buildcache
-        cache-to: |
-          type=gha,mode=max
-          type=registry,ref=ghcr.io/${{ github.repository }}-extloader:buildcache,mode=max
+        # Registry cache (works on GHES)
+        cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-extloader:buildcache
+        cache-to: type=registry,ref=ghcr.io/${{ github.repository }}-extloader:buildcache,mode=max
         platforms: linux/amd64
         build-args: |
           BUILD_HASH=${{ github.sha }}
@@ -345,12 +337,9 @@ jobs:
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-        cache-from: |
-          type=gha
-          type=registry,ref=ghcr.io/${{ github.repository }}-jupyter-kernel:buildcache
-        cache-to: |
-          type=gha,mode=max
-          type=registry,ref=ghcr.io/${{ github.repository }}-jupyter-kernel:buildcache,mode=max
+        # Registry cache (works on GHES)
+        cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-jupyter-kernel:buildcache
+        cache-to: type=registry,ref=ghcr.io/${{ github.repository }}-jupyter-kernel:buildcache,mode=max
         platforms: linux/amd64
         build-args: |
           BUILD_HASH=${{ github.sha }}
