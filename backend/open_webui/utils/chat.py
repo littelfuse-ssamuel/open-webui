@@ -243,8 +243,29 @@ async def generate_chat_completion(
     log.info(f"Documents to process after dedup: {len(documents)}")
 
     if vision_capable and documents:
-        log.info(f"Processing {len(documents)} documents for vision model")
+        # Initialize request-scoped cache for processed vision documents
+        # This prevents re-processing the same documents during tool call loops
+        if not hasattr(request.state, 'processed_vision_docs'):
+            request.state.processed_vision_docs = set()
+        
+        # Filter out documents already fully processed in this request
+        docs_to_process = []
+        for doc in documents:
+            doc_id = doc.get("id")
+            if doc_id and doc_id in request.state.processed_vision_docs:
+                log.info(f"Skipping already-processed document (request cache): {doc_id}")
+            else:
+                docs_to_process.append(doc)
+        
+        if len(docs_to_process) < len(documents):
+            log.info(f"Request cache filtered: {len(documents)} -> {len(docs_to_process)} documents to process")
+        
+        if not docs_to_process:
+            log.info("All documents already processed in this request, skipping image loading")
+        
+        log.info(f"Processing {len(docs_to_process)} documents for vision model")
         last_user_message = None
+
         for message in reversed(form_data["messages"]):
             if message.get("role") == "user":
                 last_user_message = message
@@ -277,7 +298,7 @@ async def generate_chat_completion(
             images_added = 0
             images_skipped_duplicate = 0
 
-            for doc in documents:
+            for doc in docs_to_process:
                 doc_id = doc.get("id")
                 if not doc_id:
                     continue
@@ -287,7 +308,38 @@ async def generate_chat_completion(
                     log.warning(f"File not found: {doc_id}")
                     continue
 
-                log.info(f"Processing document {doc_id} with {len(file_model.image_refs) if file_model.image_refs else 0} images")
+                image_count = len(file_model.image_refs) if file_model.image_refs else 0
+                log.info(f"Processing document {doc_id} with {image_count} images")
+
+                # Early exit: Check if ALL images from this document are already in message content
+                # This avoids iterating through all images just to skip them one by one
+                if file_model.image_refs and existing_image_signatures:
+                    # Sample first few images to check if document was already processed
+                    sample_size = min(3, len(file_model.image_refs))
+                    images_already_present = 0
+                    
+                    for sample_ref in file_model.image_refs[:sample_size]:
+                        sample_path = os.path.join(DATA_DIR, sample_ref)
+                        if os.path.exists(sample_path):
+                            try:
+                                with open(sample_path, "rb") as f:
+                                    sample_data = f.read()
+                                    sample_encoded = base64.b64encode(sample_data).decode("utf-8")
+                                    ext = os.path.splitext(sample_path)[1].lower()
+                                    mime = {'.png': 'image/png', '.jpg': 'image/jpeg', 
+                                            '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+                                            '.webp': 'image/webp'}.get(ext, 'image/jpeg')
+                                    sample_sig = f"data:{mime};base64,{sample_encoded}"[:200]
+                                    if sample_sig in existing_image_signatures:
+                                        images_already_present += 1
+                            except Exception:
+                                pass
+                    
+                    # If all sampled images are present, assume entire document is processed
+                    if images_already_present == sample_size and sample_size > 0:
+                        log.info(f"Document {doc_id}: All sampled images already in content, skipping entire document")
+                        request.state.processed_vision_docs.add(doc_id)
+                        continue
 
                 if file_model.image_refs:
                     for i, image_ref in enumerate(file_model.image_refs):
@@ -351,8 +403,12 @@ async def generate_chat_completion(
                             log.error(f"Error processing image {image_ref}: {e}")
                             import traceback
                             log.error(f"Traceback: {traceback.format_exc()}")
+                    # Mark this document as fully processed in request cache
+                    request.state.processed_vision_docs.add(doc_id)
                 else:
                     log.warning(f"No images found in document {doc_id}")
+                    # Still mark as processed to avoid re-checking
+                    request.state.processed_vision_docs.add(doc_id)
 
             # Log deduplication summary
             if images_skipped_duplicate > 0:
