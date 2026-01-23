@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir \
     numpy \
     pandas \
     matplotlib \
+    requests \
     scipy \
     scikit-learn \
     openpyxl==3.1.5 \

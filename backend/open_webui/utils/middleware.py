@@ -15,6 +15,7 @@ import inspect
 import re
 import ast
 
+from datetime import timedelta
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
 
@@ -108,6 +109,13 @@ from open_webui.utils.filter import (
 from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.payload import apply_system_prompt_to_body
 from open_webui.utils.mcp.client import MCPClient
+from open_webui.utils.streaming import (
+    create_streaming_response_with_heartbeats,
+    add_anti_buffering_headers,
+)
+
+from open_webui.utils.auth import create_token
+from open_webui.utils.code_interpreter_files import generate_file_access_preamble
 
 
 from open_webui.config import (
@@ -116,7 +124,9 @@ from open_webui.config import (
     DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE,
     DEFAULT_CODE_INTERPRETER_PROMPT,
     CODE_INTERPRETER_BLOCKED_MODULES,
+    CODE_INTERPRETER_FILE_ACCESS_TOKEN_EXPIRY,
 )
+
 from open_webui.env import (
     GLOBAL_LOG_LEVEL,
     ENABLE_CHAT_RESPONSE_BASE64_IMAGE_URL_CONVERSION,
@@ -3468,6 +3478,44 @@ async def process_chat_response(
                         try:
                             if content_blocks[-1]["attributes"].get("type") == "code":
                                 code = content_blocks[-1]["content"]
+                                
+                                # Inject file download preamble for Jupyter engine
+                                file_preamble = ""
+                                file_cleanup = ""
+                                if (
+                                    request.app.state.config.CODE_INTERPRETER_ENGINE == "jupyter"
+                                    and metadata.get("files")
+                                ):
+                                    try:
+                                        # Generate short-lived token for file access
+                                        file_access_token = create_token(
+                                            data={
+                                                "id": user.id,
+                                                "scope": "file_access",
+                                            },
+                                            expires_delta=timedelta(
+                                                seconds=request.app.state.config.CODE_INTERPRETER_FILE_ACCESS_TOKEN_EXPIRY
+                                            ),
+                                        )
+                                        
+                                        webui_url = request.app.state.config.WEBUI_URL or ""
+                                        if not webui_url:
+                                            # Fallback: try to construct from request
+                                            webui_url = str(request.base_url).rstrip("/")
+                                        
+                                        file_preamble, file_cleanup = generate_file_access_preamble(
+                                            files=metadata.get("files", []),
+                                            webui_url=webui_url,
+                                            token=file_access_token,
+                                        )
+                                        
+                                        if file_preamble:
+                                            log.debug(f"Injecting file access preamble for {len(metadata.get('files', []))} files")
+                                    except Exception as e:
+                                        log.error(f"Error generating file access preamble: {e}")
+                                        file_preamble = ""
+                                        file_cleanup = ""
+                                
                                 if CODE_INTERPRETER_BLOCKED_MODULES:
                                     blocking_code = textwrap.dedent(
                                         f"""
@@ -3510,9 +3558,14 @@ async def process_chat_response(
                                     request.app.state.config.CODE_INTERPRETER_ENGINE
                                     == "jupyter"
                                 ):
+                                    # Wrap code with file preamble and cleanup if files are attached
+                                    final_code = code
+                                    if file_preamble:
+                                        final_code = file_preamble + code + file_cleanup
+                                    
                                     output = await execute_code_jupyter(
                                         request.app.state.config.CODE_INTERPRETER_JUPYTER_URL,
-                                        code,
+                                        final_code,
                                         (
                                             request.app.state.config.CODE_INTERPRETER_JUPYTER_AUTH_TOKEN
                                             if request.app.state.config.CODE_INTERPRETER_JUPYTER_AUTH
@@ -3909,8 +3962,15 @@ async def process_chat_response(
                 if data:
                     yield data
 
+        # Add anti-buffering headers for proxy compatibility
+        response_headers = dict(response.headers)
+        response_headers.update({
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "Cache-Control": "no-cache, no-transform",
+        })
+        
         return StreamingResponse(
             stream_wrapper(response.body_iterator, events),
-            headers=dict(response.headers),
+            headers=response_headers,
             background=response.background,
         )

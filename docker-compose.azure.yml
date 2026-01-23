@@ -21,6 +21,24 @@ services:
       - SSL_CERT_FILE=${SSL_CERT_FILE:-}
       - REQUESTS_CA_BUNDLE=${REQUESTS_CA_BUNDLE:-}
       - PORT=8080
+
+      # ===========================================
+      # Streaming & Timeout Configuration
+      # ===========================================
+      
+      # Backend HTTP client timeout (1 hour)
+      - AIOHTTP_CLIENT_TIMEOUT=3600
+      
+      # WebSocket ping settings (increased for slow responses)
+      - WEBSOCKET_SERVER_PING_TIMEOUT=120
+      - WEBSOCKET_SERVER_PING_INTERVAL=30
+      
+      # Maximum buffer size for streaming chunks (20MB)
+      - CHAT_STREAM_RESPONSE_CHUNK_MAX_BUFFER_SIZE=20971520
+      
+      # SSE heartbeat interval (15 seconds)
+      - SSE_HEARTBEAT_SECONDS=15
+
     restart: unless-stopped
     depends_on:
       extloader:

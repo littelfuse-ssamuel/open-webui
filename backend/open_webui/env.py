@@ -689,7 +689,7 @@ except ValueError:
 
 REQUESTS_VERIFY = os.environ.get("REQUESTS_VERIFY", "True").lower() == "true"
 
-AIOHTTP_CLIENT_TIMEOUT = os.environ.get("AIOHTTP_CLIENT_TIMEOUT", "")
+AIOHTTP_CLIENT_TIMEOUT = os.environ.get("AIOHTTP_CLIENT_TIMEOUT", "3600")
 
 if AIOHTTP_CLIENT_TIMEOUT == "":
     AIOHTTP_CLIENT_TIMEOUT = None
@@ -697,8 +697,14 @@ else:
     try:
         AIOHTTP_CLIENT_TIMEOUT = int(AIOHTTP_CLIENT_TIMEOUT)
     except Exception:
-        AIOHTTP_CLIENT_TIMEOUT = 300
+        AIOHTTP_CLIENT_TIMEOUT = 3600
 
+# SSE Heartbeat interval for keeping proxy connections alive
+SSE_HEARTBEAT_SECONDS = os.environ.get("SSE_HEARTBEAT_SECONDS", "15")
+try:
+    SSE_HEARTBEAT_SECONDS = int(SSE_HEARTBEAT_SECONDS)
+except Exception:
+    SSE_HEARTBEAT_SECONDS = 15
 
 AIOHTTP_CLIENT_SESSION_SSL = (
     os.environ.get("AIOHTTP_CLIENT_SESSION_SSL", "True").lower() == "true"

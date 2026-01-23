@@ -46,7 +46,7 @@ from open_webui.routers.audio import transcribe
 from open_webui.storage.provider import Storage
 
 
-from open_webui.utils.auth import get_admin_user, get_verified_user
+from open_webui.utils.auth import get_admin_user, get_verified_user, decode_token
 from open_webui.utils.access_control import has_access
 from open_webui.utils.misc import strict_match_mime_type
 from pydantic import BaseModel
@@ -745,6 +745,134 @@ async def get_file_content_by_id(
         )
 
 
+@router.get("/{id}/content/jupyter")
+async def get_file_content_for_code_interpreter(
+    request: Request,
+    id: str,
+    db: Session = Depends(get_session),
+):
+    """
+    Get file content for code interpreter execution.
+    
+    This endpoint supports Bearer token authentication, allowing the Jupyter
+    kernel to fetch files without browser session cookies.
+    
+    The token must:
+    - Be a valid JWT signed with the session secret
+    - Contain a user ID in the 'id' field
+    - Have 'scope': 'file_access' for security isolation
+    
+    Returns:
+        FileResponse with the file content
+        
+    Raises:
+        401: Invalid/missing token
+        403: Token lacks file_access scope or user lacks file access
+        404: File not found
+        500: Storage error
+    """
+    from open_webui.utils.auth import decode_token
+    from open_webui.models.users import Users
+    
+    # Extract Bearer token from Authorization header
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid Authorization header. Expected: Bearer <token>",
+        )
+    
+    token = auth_header[7:]  # Remove "Bearer " prefix
+    
+    # Decode and validate token
+    decoded = decode_token(token)
+    if not decoded:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+        )
+    
+    # Verify token scope (security: only file_access tokens work here)
+    if decoded.get("scope") != "file_access":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Token does not have file_access scope",
+        )
+    
+    # Get user from token
+    user_id = decoded.get("id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token missing user ID",
+        )
+    
+    user = Users.get_user_by_id(user_id, db=db)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+        )
+    
+    # Get file
+    file = Files.get_file_by_id(id, db=db)
+    if not file:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+    
+    # Check access permissions (same logic as regular endpoint)
+    if not (
+        file.user_id == user.id
+        or user.role == "admin"
+        or has_access_to_file(id, "read", user, db=db)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this file",
+        )
+    
+    # Get file from storage
+    try:
+        file_path = Storage.get_file(file.path)
+        file_path = Path(file_path)
+        
+        if not file_path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="File not found in storage",
+            )
+        
+        # Return file with appropriate headers
+        filename = file.meta.get("name", file.filename)
+        encoded_filename = quote(filename)
+        content_type = file.meta.get("content_type", "application/octet-stream")
+        
+        headers = {
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+            "X-File-Name": encoded_filename,
+            "X-File-Id": id,
+        }
+        
+        log.info(f"Serving file {id} ({filename}) for code interpreter")
+        
+        return FileResponse(
+            file_path,
+            headers=headers,
+            media_type=content_type,
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception(f"Error getting file content for code interpreter: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error retrieving file",
+        )
+
+        
 @router.get("/{id}/content/html")
 async def get_html_file_content_by_id(
     id: str, user=Depends(get_verified_user), db: Session = Depends(get_session)

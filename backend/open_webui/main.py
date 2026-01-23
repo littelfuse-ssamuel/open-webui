@@ -503,6 +503,8 @@ from open_webui.env import (
     WEBUI_ADMIN_EMAIL,
     WEBUI_ADMIN_PASSWORD,
     WEBUI_ADMIN_NAME,
+    # Heartbeat Streaming
+    SSE_HEARTBEAT_SECONDS,
 )
 
 
@@ -1580,6 +1582,133 @@ async def embeddings(
         await get_all_models(request, user=user)
     # Use generic dispatcher in utils.embeddings
     return await generate_embeddings(request, form_data, user)
+
+async def stream_with_heartbeats(
+    async_generator,
+    heartbeat_interval: int = SSE_HEARTBEAT_SECONDS,
+    initial_message: str = None
+):
+    """
+    Wraps an async generator to inject SSE heartbeat comments at regular intervals.
+    This prevents proxy timeouts (e.g., Cloudflare's 100-second limit) during
+    long-running operations like tool calls or slow model responses.
+    
+    SSE comment format `: keep-alive\n\n` is ignored by SSE clients per spec.
+    
+    Args:
+        async_generator: The original async generator yielding SSE data
+        heartbeat_interval: Seconds between heartbeat comments (default from env)
+        initial_message: Optional initial status message to send immediately
+    
+    Yields:
+        SSE formatted data with interleaved heartbeat comments
+    """
+    import asyncio
+    
+    # Send initial message immediately to open the stream
+    if initial_message:
+        yield f"data: {json.dumps({'status': initial_message})}\n\n".encode("utf-8")
+    
+    # Create a queue to receive items from the generator
+    queue = asyncio.Queue()
+    generator_done = asyncio.Event()
+    
+    async def producer():
+        """Consume the async generator and put items in queue"""
+        try:
+            async for item in async_generator:
+                await queue.put(item)
+        except Exception as e:
+            await queue.put({"__error__": str(e)})
+        finally:
+            generator_done.set()
+    
+    # Start the producer task
+    producer_task = asyncio.create_task(producer())
+    
+    try:
+        while not generator_done.is_set() or not queue.empty():
+            try:
+                # Wait for item with timeout for heartbeat
+                item = await asyncio.wait_for(
+                    queue.get(),
+                    timeout=heartbeat_interval
+                )
+                
+                # Check for error
+                if isinstance(item, dict) and "__error__" in item:
+                    yield f"data: {json.dumps({'error': item['__error__']})}\n\n".encode("utf-8")
+                    break
+                
+                # Yield the actual item
+                if isinstance(item, bytes):
+                    yield item
+                elif isinstance(item, str):
+                    yield item.encode("utf-8")
+                else:
+                    yield item
+                    
+            except asyncio.TimeoutError:
+                # Send heartbeat comment (ignored by SSE clients)
+                yield b": keep-alive\n\n"
+                
+    except asyncio.CancelledError:
+        producer_task.cancel()
+        raise
+    finally:
+        if not producer_task.done():
+            producer_task.cancel()
+            try:
+                await producer_task
+            except asyncio.CancelledError:
+                pass
+
+
+def create_heartbeat_streaming_response(
+    body_iterator,
+    headers: dict = None,
+    status_code: int = 200,
+    background = None,
+    initial_message: str = None
+):
+    """
+    Creates a StreamingResponse with heartbeat injection and proper headers
+    to prevent proxy buffering.
+    
+    Args:
+        body_iterator: The async generator to wrap
+        headers: Optional headers dict (will add anti-buffering headers)
+        status_code: HTTP status code
+        background: Background task to run after response
+        initial_message: Optional initial status message
+    
+    Returns:
+        StreamingResponse with heartbeats and anti-buffering headers
+    """
+    # Ensure headers dict exists
+    if headers is None:
+        headers = {}
+    
+    # Add headers to prevent proxy buffering
+    headers.update({
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",  # Disable nginx buffering
+        "X-Content-Type-Options": "nosniff",
+    })
+    
+    return StreamingResponse(
+        stream_with_heartbeats(
+            body_iterator,
+            heartbeat_interval=SSE_HEARTBEAT_SECONDS,
+            initial_message=initial_message
+        ),
+        status_code=status_code,
+        headers=headers,
+        background=background,
+        media_type="text/event-stream"
+    )
 
 
 @app.post("/api/chat/completions")

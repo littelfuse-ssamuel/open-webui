@@ -2172,6 +2172,13 @@ CODE_INTERPRETER_JUPYTER_TIMEOUT = PersistentConfig(
     ),
 )
 
+CODE_INTERPRETER_FILE_ACCESS_TOKEN_EXPIRY = PersistentConfig(
+    "CODE_INTERPRETER_FILE_ACCESS_TOKEN_EXPIRY",
+    "code_interpreter.file_access_token_expiry",
+    int(os.environ.get(
+        "CODE_INTERPRETER_FILE_ACCESS_TOKEN_EXPIRY", "300")),
+)
+
 CODE_INTERPRETER_BLOCKED_MODULES = [
     library.strip()
     for library in os.environ.get("CODE_INTERPRETER_BLOCKED_MODULES", "").split(",")
