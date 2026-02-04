@@ -705,8 +705,11 @@ async def get_file_content_by_id(
                 content_type = file.meta.get("content_type")
                 filename = file.meta.get("name", file.filename)
                 encoded_filename = quote(filename)
-                headers = {}
-
+                headers = {
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                }
                 if attachment:
                     headers["Content-Disposition"] = (
                         f"attachment; filename*=UTF-8''{encoded_filename}"
