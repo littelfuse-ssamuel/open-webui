@@ -14,17 +14,21 @@ export enum TTS_RESPONSE_SPLIT {
 	NONE = 'none'
 }
 
-// Excel artifact types for file handling
-export type ExcelArtifact = {
-	type: 'excel';
-	url: string;
-	name: string;
-	fileId?: string;
-	meta?: {
-		sheetNames?: string[];
-		activeSheet?: string;
-	};
-};
+// Re-export Excel types from dedicated module
+export type {
+	ExcelArtifact,
+	ExcelArtifactMeta,
+	ExcelFilesEvent,
+	ExcelUpdateRequest,
+	ExcelCellChange,
+	ExcelUpdateResponse
+} from './excel';
+export {
+	isValidExcelArtifact,
+	hasExcelArtifacts,
+	EXCEL_EXTENSIONS,
+	EXCEL_MIME_TYPE
+} from './excel';
 
 // Presentation artifact types for Reveal.js presentations
 export type PresentationArtifact = {

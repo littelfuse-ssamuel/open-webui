@@ -24,6 +24,8 @@
 	import PptxViewer from '../artifacts/PptxViewer.svelte';
 	import RevealViewer from '../artifacts/RevealViewer.svelte';
 	import fileSaver from 'file-saver';
+	import type { ExcelArtifact } from '$lib/types/excel';
+	import { isValidExcelArtifact } from '$lib/types/excel';
 
 	const { saveAs } = fileSaver;
 
@@ -309,7 +311,13 @@
 								svg={contents[selectedContentIdx].content}
 							/>
 						{:else if contents[selectedContentIdx].type === 'excel'}
-							<ExcelViewer file={contents[selectedContentIdx]} />
+							{#if isValidExcelArtifact(contents[selectedContentIdx])}
+								<ExcelViewer file={contents[selectedContentIdx]} />
+							{:else}
+								<div class="excel-error">
+									<span>Invalid Excel file data</span>
+								</div>
+							{/if}
 						{:else if contents[selectedContentIdx].type === 'presentation'}
 							<RevealViewer content={contents[selectedContentIdx].content} />
 						{:else if contents[selectedContentIdx].type === 'pptx'}
