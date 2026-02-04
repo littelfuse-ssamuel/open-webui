@@ -312,7 +312,7 @@
 							/>
 						{:else if contents[selectedContentIdx].type === 'excel'}
 							{#if isValidExcelArtifact(contents[selectedContentIdx])}
-								<ExcelViewer file={contents[selectedContentIdx]} />
+								<ExcelViewer file={contents[selectedContentIdx] as unknown as ExcelArtifact} />
 							{:else}
 								<div class="excel-error">
 									<span>Invalid Excel file data</span>
