@@ -3841,6 +3841,22 @@ async def process_chat_response(
                                 }
                             )
 
+                        # Link generated files to chat session so agent can see them later
+                        all_generated_artifacts = excel_artifacts + pptx_artifacts
+                        if all_generated_artifacts and metadata.get("chat_id") and metadata.get("message_id"):
+                            try:
+                                file_ids = [artifact.get("fileId") for artifact in all_generated_artifacts if artifact.get("fileId")]
+                                if file_ids:
+                                    Chats.insert_chat_files(
+                                        chat_id=metadata["chat_id"],
+                                        message_id=metadata["message_id"],
+                                        file_ids=file_ids,
+                                        user_id=user.id,
+                                    )
+                                    log.info(f"Linked {len(file_ids)} generated files to chat {metadata['chat_id']}, message {metadata['message_id']}")
+                            except Exception as e:
+                                log.error(f"Error linking generated files to chat: {e}")
+
                         try:
                             new_form_data = {
                                 **form_data,
