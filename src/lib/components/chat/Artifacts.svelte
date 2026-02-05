@@ -333,3 +333,21 @@
 		</div>
 	</div>
 </div>
+
+<style>
+	.excel-error {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		height: 100%;
+		width: 100%;
+		color: #dc2626;
+		font-size: 14px;
+		gap: 8px;
+	}
+
+	:global(.dark) .excel-error {
+		color: #f87171;
+	}
+</style>

@@ -3,6 +3,7 @@
 	import { toast } from 'svelte-sonner';
 	import type { ExcelArtifact, ExcelCellChange } from '$lib/types/excel';
 	import { isValidExcelArtifact, EXCEL_MIME_TYPE } from '$lib/types/excel';
+	import { excelCore } from '$lib/services/excel-core';
 
 	const dispatch = createEventDispatcher();
 
@@ -499,15 +500,8 @@
 			loading = true;
 			error = null;
 
-			// FIX #4: Add cache-busting to ensure we get the latest version
-			const cacheBustUrl = file.url + (file.url.includes('?') ? '&' : '?') + '_t=' + Date.now();
-			
-			const resp = await fetch(cacheBustUrl);
-			if (!resp.ok) {
-				throw new Error(`Failed to fetch file: ${resp.statusText}`);
-			}
-
-			const arrayBuffer = await resp.arrayBuffer();
+			// Use excelCore service for consistent fetch with cache-busting
+			const arrayBuffer = await excelCore.fetchExcelFile(file.url);
 			workbookData = await convertXLSXToUniverData(arrayBuffer);
 
 			await initUniver(workbookData);
@@ -564,7 +558,7 @@
 
 			for (const sheetData of sheetsToSave) {
 				const sheetName = sheetData.name || 'Sheet1';
-				const changes: Array<{ row: number; col: number; value: any; isFormula: boolean }> = [];
+				const changes: ExcelCellChange[] = [];
 
 				if (sheetData?.cellData) {
 					Object.entries(sheetData.cellData).forEach(([rowStr, rowData]: [string, any]) => {
@@ -587,26 +581,16 @@
 				// Only send if there are changes for this sheet
 				if (changes.length > 0) {
 					try {
-						const response = await fetch('/api/v1/excel/update', {
-							method: 'POST',
-							headers: { 'Content-Type': 'application/json' },
-							body: JSON.stringify({
-								fileId: file.fileId,
-								sheet: sheetName,
-								changes
-							})
+						// Use excelCore service for consistent save operations
+						await excelCore.saveChanges({
+							fileId: file.fileId!,
+							sheet: sheetName,
+							changes
 						});
-
-						if (!response.ok) {
-							const errorData = await response.json();
-							errors.push(`Sheet "${sheetName}": ${errorData.detail || 'Failed to save'}`);
-						} else {
-							const result = await response.json();
-							totalChangesApplied += changes.length;
-							console.log(`Saved ${changes.length} cells to sheet "${sheetName}"`);
-						}
+						totalChangesApplied += changes.length;
+						console.log(`Saved ${changes.length} cells to sheet "${sheetName}"`);
 					} catch (e) {
-						errors.push(`Sheet "${sheetName}": ${e instanceof Error ? e.message : 'Network error'}`);
+						errors.push(`Sheet "${sheetName}": ${e instanceof Error ? e.message : 'Save failed'}`);
 					}
 				}
 			}
@@ -690,8 +674,8 @@
 				type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 			});
 
-			const { saveAs } = await import('file-saver');
-			saveAs(blob, file.name || 'download.xlsx');
+			// Use excelCore service for consistent download
+			await excelCore.downloadExcel(blob, file.name || 'download.xlsx');
 		} catch (e) {
 			console.error('Error downloading Excel file:', e);
 			toast.error('Failed to download file');
