@@ -9,8 +9,13 @@
 
 	export let file: ExcelArtifact;
 
+	// Constants
+	// Delay to allow fullscreen transition to complete before triggering Univer resize
+	const FULLSCREEN_TRANSITION_DELAY = 100;
+
 	// State
 	let containerElement: HTMLDivElement;
+	let wrapperElement: HTMLDivElement;
 	let loading = true;
 	let error: string | null = null;
 	let saving = false;
@@ -743,23 +748,25 @@
 
 	// Toggle fullscreen
 	function toggleFullscreen() {
-		if (!containerElement) return;
-
-		const viewerContainer = containerElement.closest('.excel-viewer-wrapper');
-		if (!viewerContainer) return;
+		if (!wrapperElement) return;
 
 		if (!document.fullscreenElement) {
-			viewerContainer.requestFullscreen?.();
-			isFullscreen = true;
+			wrapperElement.requestFullscreen?.();
 		} else {
 			document.exitFullscreen?.();
-			isFullscreen = false;
 		}
+		// Note: isFullscreen state is updated via handleFullscreenChange event listener
+		// which ensures it stays in sync regardless of how fullscreen is entered/exited
 	}
 
 	// Handle fullscreen change
 	function handleFullscreenChange() {
 		isFullscreen = !!document.fullscreenElement;
+		
+		// Trigger Univer resize after fullscreen state change to ensure proper layout
+		setTimeout(() => {
+			window.dispatchEvent(new Event('resize'));
+		}, FULLSCREEN_TRANSITION_DELAY);
 	}
 
 	// Warn about unsaved changes before leaving
@@ -807,7 +814,7 @@
 	$: dispatch('unsavedChanges', { hasUnsavedChanges });
 </script>
 
-<div class="excel-viewer-wrapper">
+<div class="excel-viewer-wrapper" bind:this={wrapperElement}>
 	<div class="excel-viewer">
 		<!-- Header toolbar -->
 		<div class="excel-header">
