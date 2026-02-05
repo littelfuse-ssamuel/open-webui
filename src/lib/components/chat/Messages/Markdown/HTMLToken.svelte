@@ -150,7 +150,7 @@
 		<br />
 	{:else if html && html.includes('citation-image')}
 		<!-- Handle citation-image divs with markdown syntax from filter output -->
-		{@const match = html.match(/<div\s+class="citation-image"[^>]*>([\s\S]*?)<\/div>/)}
+		{@const match = html.match(/<div\s+class="citation-image">([\s\S]*?)<\/div>/)}
 		{@const content = match && match[1] ? match[1].trim() : null}
 		{@const imageData = content ? parseMarkdownImage(content) : null}
 		{#if imageData}
