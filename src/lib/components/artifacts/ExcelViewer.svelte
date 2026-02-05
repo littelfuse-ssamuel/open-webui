@@ -9,6 +9,10 @@
 
 	export let file: ExcelArtifact;
 
+	// Constants
+	// Delay to allow fullscreen transition to complete before triggering Univer resize
+	const FULLSCREEN_TRANSITION_DELAY = 100;
+
 	// State
 	let containerElement: HTMLDivElement;
 	let wrapperElement: HTMLDivElement;
@@ -751,21 +755,16 @@
 		} else {
 			document.exitFullscreen?.();
 		}
-
-		// Trigger Univer resize after a brief delay to let fullscreen transition complete
-		setTimeout(() => {
-			window.dispatchEvent(new Event('resize'));
-		}, 100);
 	}
 
 	// Handle fullscreen change
 	function handleFullscreenChange() {
 		isFullscreen = !!document.fullscreenElement;
 		
-		// Trigger Univer resize after fullscreen state change
+		// Trigger Univer resize after fullscreen state change to ensure proper layout
 		setTimeout(() => {
 			window.dispatchEvent(new Event('resize'));
-		}, 100);
+		}, FULLSCREEN_TRANSITION_DELAY);
 	}
 
 	// Warn about unsaved changes before leaving
