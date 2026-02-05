@@ -4,9 +4,11 @@
 
 	import { WEBUI_BASE_URL } from '$lib/constants';
 	import { settings } from '$lib/stores';
+	import Image from '$lib/components/common/Image.svelte';
 
 	export let id: string;
 	export let token: Token;
+	export let onSourceClick: Function = () => {};
 
 	let html: string | null = null;
 
@@ -14,6 +16,18 @@
 		html = DOMPurify.sanitize(token.text);
 	} else {
 		html = null;
+	}
+
+	// Parse markdown image syntax ![alt](url) from citation-image divs
+	function parseMarkdownImage(text: string): { src: string; alt: string } | null {
+		const match = text.match(/!\[([^\]]*)\]\(([^)]+)\)/);
+		if (match) {
+			return {
+				alt: match[1] || '',
+				src: match[2] || ''
+			};
+		}
+		return null;
 	}
 </script>
 
@@ -128,6 +142,17 @@
 		{/if}
 	{:else if token.text.trim().match(/^<br\s*\/?>$/i)}
 		<br />
+	{:else if html && html.includes('citation-image')}
+		{@const match = html.match(/<div\s+class="citation-image"[^>]*>([\s\S]*?)<\/div>/)}
+		{@const content = match && match[1] ? match[1].trim() : null}
+		{@const imageData = content ? parseMarkdownImage(content) : null}
+		{#if imageData}
+			<div class="citation-image">
+				<Image src={imageData.src} alt={imageData.alt} />
+			</div>
+		{:else}
+			{@html html}
+		{/if}
 	{:else}
 		{token.text}
 	{/if}
