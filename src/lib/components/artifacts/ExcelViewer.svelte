@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { onMount, onDestroy, createEventDispatcher } from 'svelte';
 	import { toast } from 'svelte-sonner';
-	import type { ExcelArtifact } from '$lib/types';
+	import type { ExcelArtifact, ExcelCellChange } from '$lib/types/excel';
+	import { isValidExcelArtifact, EXCEL_MIME_TYPE } from '$lib/types/excel';
 
 	const dispatch = createEventDispatcher();
 
@@ -475,6 +476,24 @@
 	// Load workbook from URL
 	async function loadWorkbook() {
 		if (!file?.url) return;
+
+		// Phase 2: Validate artifact structure
+		if (!isValidExcelArtifact(file)) {
+			console.error('Invalid Excel artifact structure:', file);
+			error = 'Invalid Excel file data';
+			loading = false;
+			return;
+		}
+
+		// Phase 2: Add file type validation
+		const fileName = file.name?.toLowerCase() || '';
+		const validExtensions = ['.xlsx', '.xlsm', '.xls'];
+		const hasValidExtension = validExtensions.some((ext) => fileName.endsWith(ext));
+
+		if (!hasValidExtension) {
+			console.warn('File does not have standard Excel extension:', fileName);
+			// Continue anyway - file might still be valid Excel
+		}
 
 		try {
 			loading = true;
