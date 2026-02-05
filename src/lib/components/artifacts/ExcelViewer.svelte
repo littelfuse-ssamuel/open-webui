@@ -11,6 +11,7 @@
 
 	// State
 	let containerElement: HTMLDivElement;
+	let wrapperElement: HTMLDivElement;
 	let loading = true;
 	let error: string | null = null;
 	let saving = false;
@@ -743,23 +744,28 @@
 
 	// Toggle fullscreen
 	function toggleFullscreen() {
-		if (!containerElement) return;
-
-		const viewerContainer = containerElement.closest('.excel-viewer-wrapper');
-		if (!viewerContainer) return;
+		if (!wrapperElement) return;
 
 		if (!document.fullscreenElement) {
-			viewerContainer.requestFullscreen?.();
-			isFullscreen = true;
+			wrapperElement.requestFullscreen?.();
 		} else {
 			document.exitFullscreen?.();
-			isFullscreen = false;
 		}
+
+		// Trigger Univer resize after a brief delay to let fullscreen transition complete
+		setTimeout(() => {
+			window.dispatchEvent(new Event('resize'));
+		}, 100);
 	}
 
 	// Handle fullscreen change
 	function handleFullscreenChange() {
 		isFullscreen = !!document.fullscreenElement;
+		
+		// Trigger Univer resize after fullscreen state change
+		setTimeout(() => {
+			window.dispatchEvent(new Event('resize'));
+		}, 100);
 	}
 
 	// Warn about unsaved changes before leaving
@@ -807,7 +813,7 @@
 	$: dispatch('unsavedChanges', { hasUnsavedChanges });
 </script>
 
-<div class="excel-viewer-wrapper">
+<div class="excel-viewer-wrapper" bind:this={wrapperElement}>
 	<div class="excel-viewer">
 		<!-- Header toolbar -->
 		<div class="excel-header">
