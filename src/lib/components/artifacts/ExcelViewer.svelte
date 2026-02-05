@@ -124,8 +124,6 @@
 
 			return {
 				Univer,
-			return {
-				Univer,
 				LocaleType,
 				UniverInstanceType,
 				defaultTheme,
