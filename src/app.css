@@ -807,3 +807,9 @@ body {
 #note-content-container .ProseMirror {
 	padding-bottom: 2rem; /* space for the bottom toolbar */
 }
+
+/* Citation image size constraint - added for LFRAG datasheet images */
+.citation-image img {
+  max-width: 800px;
+  height: auto;
+}
