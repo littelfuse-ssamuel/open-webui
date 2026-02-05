@@ -16,6 +16,7 @@
 	let saving = false;
 	let saveMessage = '';
 	let hasUnsavedChanges = false;
+	let dirtyChanges: Map<string, ExcelCellChange> = new Map();
 	let isFullscreen = false;
 	let hasCharts = false;
 	// Univer instances (dynamically loaded)
@@ -472,7 +473,7 @@
 		// Note: Univer handles focus automatically when users click cells
 		// Do not manually manipulate focus/tabindex as it interferes with Univer's internal editor system
 
-		// Listen for changes to track unsaved state
+		// Listen for changes to track unsaved state AND capture actual cell changes
 		univerAPI.onCommandExecuted((command: any) => {
 			const editCommands = [
 				'sheet.mutation.set-range-values',
@@ -483,9 +484,49 @@
 				'sheet.mutation.remove-col'
 			];
 
+			// Check if this is an edit command
 			if (editCommands.some((cmd) => command.id?.includes(cmd) || command.id?.includes('set'))) {
 				hasUnsavedChanges = true;
 				saveMessage = '';
+
+				// For set-range-values commands, extract the actual changed cells
+				if (command.id?.includes('set-range-values') && command.params) {
+					try {
+						const params = command.params;
+						const subUnitId = params.subUnitId; // Sheet ID
+						const cellValue = params.cellValue; // The cell data object
+						
+						if (subUnitId && cellValue) {
+							// cellValue is structured as { [row]: { [col]: cellData } }
+							Object.entries(cellValue).forEach(([rowStr, rowData]: [string, any]) => {
+								if (rowData && typeof rowData === 'object') {
+									Object.entries(rowData).forEach(([colStr, cellData]: [string, any]) => {
+										const row = parseInt(rowStr) + 1; // Convert to 1-indexed
+										const col = parseInt(colStr) + 1; // Convert to 1-indexed
+										
+										// Extract value - check for formula first
+										const hasFormula = !!(cellData?.f);
+										const value = hasFormula ? `=${cellData.f}` : cellData?.v;
+										
+										// Only track if we have a valid value (not undefined)
+										if (value !== undefined) {
+											const key = `${subUnitId}:${row}:${col}`;
+											dirtyChanges.set(key, {
+												row,
+												col,
+												value,
+												isFormula: hasFormula
+											});
+											console.debug(`Tracked change: ${key} = ${value}`);
+										}
+									});
+								}
+							});
+						}
+					} catch (e) {
+						console.warn('Could not extract cell changes from command:', e);
+					}
+				}
 			}
 		});
 
@@ -517,6 +558,7 @@
 
 		try {
 			loading = true;
+			dirtyChanges.clear();
 			error = null;
 
 			// Use excelCore service for consistent fetch with cache-busting
@@ -533,10 +575,16 @@
 		}
 	}
 
-	// FIX #4: Save changes back to server - now saves ALL sheets
+	// Save only the cells that were actually changed (dirty cell tracking)
 	async function saveChanges() {
 		if (!univerAPI || !file.fileId) {
 			saveMessage = 'No changes to save';
+			return;
+		}
+
+		if (dirtyChanges.size === 0) {
+			saveMessage = 'No changes to save';
+			hasUnsavedChanges = false;
 			return;
 		}
 
@@ -544,24 +592,22 @@
 			saving = true;
 			saveMessage = '';
 
-			// Get current workbook data from Univer
+			// Get current workbook data from Univer for sheet name resolution
 			const workbook = univerAPI.getActiveWorkbook();
 			if (!workbook) {
 				throw new Error('No active workbook');
 			}
 
-			// End any active cell editing to ensure data is synced to snapshot
+			// End any active cell editing to ensure data is synced
 			try {
 				await workbook.endEditingAsync(true);
 			} catch (e) {
-				// endEditingAsync may not be available in older versions, fall back to command
 				console.warn('endEditingAsync not available, trying command fallback');
 				try {
 					univerAPI.executeCommand('sheet.operation.set-cell-edit-visible', {
 						visible: false,
-						_eventType: 2 // DeviceInputEventType.PointerUp
+						_eventType: 2
 					});
-					// Small delay to ensure data syncs
 					await new Promise(resolve => setTimeout(resolve, 50));
 				} catch (cmdErr) {
 					console.warn('Could not end editing:', cmdErr);
@@ -570,44 +616,36 @@
 
 			const snapshot = workbook.save();
 
-			// FIX #4: Iterate through ALL sheets and save changes for each
-			const sheetsToSave = Object.values(snapshot.sheets || {}) as any[];
+			// Group dirty changes by sheet
+			const changesBySheet = new Map<string, { sheetName: string; changes: ExcelCellChange[] }>();
+
+			dirtyChanges.forEach((change, key) => {
+				const [subUnitId] = key.split(':');
+				
+				// Get sheet name from snapshot
+				const sheetData = snapshot.sheets?.[subUnitId];
+				const sheetName = sheetData?.name || 'Sheet1';
+
+				if (!changesBySheet.has(subUnitId)) {
+					changesBySheet.set(subUnitId, { sheetName, changes: [] });
+				}
+				changesBySheet.get(subUnitId)!.changes.push(change);
+			});
+
 			let totalChangesApplied = 0;
 			const errors: string[] = [];
 
-			for (const sheetData of sheetsToSave) {
-				const sheetName = sheetData.name || 'Sheet1';
-				const changes: ExcelCellChange[] = [];
-
-				if (sheetData?.cellData) {
-					Object.entries(sheetData.cellData).forEach(([rowStr, rowData]: [string, any]) => {
-						const row = parseInt(rowStr) + 1; // Convert to 1-indexed
-						Object.entries(rowData).forEach(([colStr, cellData]: [string, any]) => {
-							const col = parseInt(colStr) + 1; // Convert to 1-indexed
-							const hasFormula = !!cellData.f;
-							const value = hasFormula ? `=${cellData.f}` : cellData.v;
-
-							changes.push({
-								row,
-								col,
-								value,
-								isFormula: hasFormula
-							});
-						});
-					});
-				}
-
-				// Only send if there are changes for this sheet
+			// Save changes for each sheet
+			for (const [subUnitId, { sheetName, changes }] of changesBySheet) {
 				if (changes.length > 0) {
 					try {
-						// Use excelCore service for consistent save operations
 						await excelCore.saveChanges({
 							fileId: file.fileId!,
 							sheet: sheetName,
 							changes
 						});
 						totalChangesApplied += changes.length;
-						console.log(`Saved ${changes.length} cells to sheet "${sheetName}"`);
+						console.log(`Saved ${changes.length} changed cells to sheet "${sheetName}"`);
 					} catch (e) {
 						errors.push(`Sheet "${sheetName}": ${e instanceof Error ? e.message : 'Save failed'}`);
 					}
@@ -618,8 +656,10 @@
 				throw new Error(errors.join('; '));
 			}
 
+			// Clear dirty changes after successful save
+			dirtyChanges.clear();
 			hasUnsavedChanges = false;
-			saveMessage = `Successfully saved ${totalChangesApplied} cells across ${sheetsToSave.length} sheet(s)`;
+			saveMessage = `Successfully saved ${totalChangesApplied} cell(s)`;
 			saving = false;
 
 			// Auto-dismiss success message

@@ -122,6 +122,11 @@ async def update_excel_file(
                     log.warning(f"Invalid cell coordinates: row={change.row}, col={change.col}")
                     continue
 
+                # Skip if value is None - don't overwrite existing data with null
+                if change.value is None:
+                    log.debug(f"Skipping cell at row={change.row}, col={change.col} - value is None")
+                    continue
+
                 # Get the cell and set its value
                 cell = ws.cell(row=change.row, column=change.col)
 
