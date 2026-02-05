@@ -41,17 +41,18 @@
 				{ UniverSheetsPlugin },
 				{ UniverSheetsUIPlugin },
 				{ UniverSheetsFormulaPlugin },
-				// FIX #1: Formula UI plugin for editable formula bar
 				{ UniverSheetsFormulaUIPlugin },
 				{ FUniver },
-				// FIX #3: Drawing plugins for floating images and charts foundation
 				{ UniverDrawingPlugin },
 				{ UniverDrawingUIPlugin },
 				{ UniverSheetsDrawingPlugin },
 				{ UniverSheetsDrawingUIPlugin },
-				// FIX #3: Chart plugins (pro - free for up to 4 charts)
 				{ UniverSheetsChartPlugin },
-				{ UniverSheetsChartUIPlugin }
+				{ UniverSheetsChartUIPlugin },
+				{ UniverSheetsFilterPlugin },
+				{ UniverSheetsFilterUIPlugin },
+				{ UniverSheetsSortPlugin },
+				{ UniverSheetsSortUIPlugin }
 			] = await Promise.all([
 				// Core modules
 				import('@univerjs/core'),
@@ -64,17 +65,18 @@
 				import('@univerjs/sheets'),
 				import('@univerjs/sheets-ui'),
 				import('@univerjs/sheets-formula'),
-				// FIX #1: Formula UI plugin
 				import('@univerjs/sheets-formula-ui'),
 				import('@univerjs/facade'),
-				// FIX #3: Drawing plugins
 				import('@univerjs/drawing'),
 				import('@univerjs/drawing-ui'),
 				import('@univerjs/sheets-drawing'),
 				import('@univerjs/sheets-drawing-ui'),
-				// FIX #3: Chart plugins
 				import('@univerjs-pro/sheets-chart'),
-				import('@univerjs-pro/sheets-chart-ui')
+				import('@univerjs-pro/sheets-chart-ui'),
+				import('@univerjs/sheets-filter'),
+				import('@univerjs/sheets-filter-ui'),
+				import('@univerjs/sheets-sort'),
+				import('@univerjs/sheets-sort-ui')
 			]);
 
 			// Import styles
@@ -83,12 +85,12 @@
 				import('@univerjs/ui/lib/index.css'),
 				import('@univerjs/docs-ui/lib/index.css'),
 				import('@univerjs/sheets-ui/lib/index.css'),
-				// FIX #1: Formula UI styles
 				import('@univerjs/sheets-formula-ui/lib/index.css'),
-				// FIX #3: Drawing and chart styles
 				import('@univerjs/drawing-ui/lib/index.css'),
 				import('@univerjs/sheets-drawing-ui/lib/index.css'),
-				import('@univerjs-pro/sheets-chart-ui/lib/index.css')
+				import('@univerjs-pro/sheets-chart-ui/lib/index.css'),
+				import('@univerjs/sheets-filter-ui/lib/index.css'),
+				import('@univerjs/sheets-sort-ui/lib/index.css')
 			]);
 
 			// Import locale
@@ -98,28 +100,30 @@
 				{ default: DocsUIEnUS },
 				{ default: SheetsEnUS },
 				{ default: SheetsUIEnUS },
-				// FIX #1: Formula UI locale
 				{ default: SheetsFormulaUIEnUS },
-				// FIX #3: Drawing and chart locales
 				{ default: DrawingUIEnUS },
 				{ default: SheetsDrawingUIEnUS },
 				{ default: SheetsChartEnUS },
-				{ default: SheetsChartUIEnUS }
+				{ default: SheetsChartUIEnUS },
+				{ default: SheetsFilterUIEnUS },
+				{ default: SheetsSortUIEnUS }
 			] = await Promise.all([
 				import('@univerjs/design/locale/en-US'),
 				import('@univerjs/ui/locale/en-US'),
 				import('@univerjs/docs-ui/locale/en-US'),
 				import('@univerjs/sheets/locale/en-US'),
 				import('@univerjs/sheets-ui/locale/en-US'),
-				// FIX #1: Formula UI locale
 				import('@univerjs/sheets-formula-ui/locale/en-US'),
-				// FIX #3: Drawing and chart locales
 				import('@univerjs/drawing-ui/locale/en-US'),
 				import('@univerjs/sheets-drawing-ui/locale/en-US'),
 				import('@univerjs-pro/sheets-chart/locale/en-US'),
-				import('@univerjs-pro/sheets-chart-ui/locale/en-US')
+				import('@univerjs-pro/sheets-chart-ui/locale/en-US'),
+				import('@univerjs/sheets-filter-ui/locale/en-US'),
+				import('@univerjs/sheets-sort-ui/locale/en-US')
 			]);
 
+			return {
+				Univer,
 			return {
 				Univer,
 				LocaleType,
@@ -133,30 +137,31 @@
 				UniverSheetsPlugin,
 				UniverSheetsUIPlugin,
 				UniverSheetsFormulaPlugin,
-				// FIX #1: Formula UI plugin
 				UniverSheetsFormulaUIPlugin,
 				FUniver,
-				// FIX #3: Drawing plugins
 				UniverDrawingPlugin,
 				UniverDrawingUIPlugin,
 				UniverSheetsDrawingPlugin,
 				UniverSheetsDrawingUIPlugin,
-				// FIX #3: Chart plugins
 				UniverSheetsChartPlugin,
 				UniverSheetsChartUIPlugin,
+				UniverSheetsFilterPlugin,
+				UniverSheetsFilterUIPlugin,
+				UniverSheetsSortPlugin,
+				UniverSheetsSortUIPlugin,
 				locales: {
 					...DesignEnUS,
 					...UIEnUS,
 					...DocsUIEnUS,
 					...SheetsEnUS,
 					...SheetsUIEnUS,
-					// FIX #1: Formula UI locale
 					...SheetsFormulaUIEnUS,
-					// FIX #3: Drawing and chart locales
 					...DrawingUIEnUS,
 					...SheetsDrawingUIEnUS,
 					...SheetsChartEnUS,
-					...SheetsChartUIEnUS
+					...SheetsChartUIEnUS,
+					...SheetsFilterUIEnUS,
+					...SheetsSortUIEnUS
 				}
 			};
 		} catch (e) {
@@ -289,6 +294,15 @@
 
 			const sheetId = `sheet_${sheetIndex}`;
 			sheetOrder.push(sheetId);
+			let freeze: any = undefined;
+			if (ws['!freeze']) {
+				freeze = {
+					startRow: ws['!freeze'].ySplit || 0,
+					startColumn: ws['!freeze'].xSplit || 0,
+					ySplit: ws['!freeze'].ySplit || 0,
+					xSplit: ws['!freeze'].xSplit || 0
+				};
+			}
 
 			sheets[sheetId] = {
 				id: sheetId,
@@ -299,6 +313,7 @@
 				rowData,
 				columnData,
 				mergeData,
+				freeze,
 				defaultRowHeight: 24,
 				defaultColumnWidth: 88
 			};
@@ -386,17 +401,18 @@
 			UniverSheetsPlugin,
 			UniverSheetsUIPlugin,
 			UniverSheetsFormulaPlugin,
-			// FIX #1: Formula UI plugin
 			UniverSheetsFormulaUIPlugin,
 			FUniver,
-			// FIX #3: Drawing plugins
 			UniverDrawingPlugin,
 			UniverDrawingUIPlugin,
 			UniverSheetsDrawingPlugin,
 			UniverSheetsDrawingUIPlugin,
-			// FIX #3: Chart plugins
 			UniverSheetsChartPlugin,
 			UniverSheetsChartUIPlugin,
+			UniverSheetsFilterPlugin,
+			UniverSheetsFilterUIPlugin,
+			UniverSheetsSortPlugin,
+			UniverSheetsSortUIPlugin,
 			locales
 		} = modules;
 
@@ -437,9 +453,14 @@
 		univer.registerPlugin(UniverSheetsDrawingPlugin);
 		univer.registerPlugin(UniverSheetsDrawingUIPlugin);
 
-		// FIX #3: Register Chart plugins (pro - free for up to 4 charts without license)
 		univer.registerPlugin(UniverSheetsChartPlugin);
 		univer.registerPlugin(UniverSheetsChartUIPlugin);
+
+		univer.registerPlugin(UniverSheetsFilterPlugin);
+		univer.registerPlugin(UniverSheetsFilterUIPlugin);
+
+		univer.registerPlugin(UniverSheetsSortPlugin);
+		univer.registerPlugin(UniverSheetsSortUIPlugin);
 
 		// Create workbook with data
 		univer.createUnit(UniverInstanceType.UNIVER_SHEET, data);
