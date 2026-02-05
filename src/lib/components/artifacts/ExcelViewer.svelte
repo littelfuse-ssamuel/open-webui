@@ -755,6 +755,8 @@
 		} else {
 			document.exitFullscreen?.();
 		}
+		// Note: isFullscreen state is updated via handleFullscreenChange event listener
+		// which ensures it stays in sync regardless of how fullscreen is entered/exited
 	}
 
 	// Handle fullscreen change
