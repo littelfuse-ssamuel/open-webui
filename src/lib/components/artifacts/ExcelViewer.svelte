@@ -1135,10 +1135,22 @@
 	/* Override Univer's default styles to fit our container */
 	.excel-univer-container :global(.univer-app) {
 		height: 100% !important;
+		width: 100% !important;
 	}
 
 	.excel-univer-container :global(.univer-container) {
 		height: 100% !important;
+		width: 100% !important;
+	}
+
+	/* Fullscreen-specific overrides for Univer width */
+	:global(.excel-viewer-wrapper:fullscreen) .excel-univer-container :global(.univer-app),
+	:global(.excel-viewer-wrapper:fullscreen) .excel-univer-container :global(.univer-container),
+	:global(.excel-viewer-wrapper:fullscreen) .excel-univer-container :global(.univer-workbench),
+	:global(.excel-viewer-wrapper:fullscreen) .excel-univer-container :global(.univer-workbench-container),
+	:global(.excel-viewer-wrapper:fullscreen) .excel-univer-container :global(.univer-sheet-container) {
+		width: 100% !important;
+		max-width: 100% !important;
 	}
 
 	/* Dark mode support */
