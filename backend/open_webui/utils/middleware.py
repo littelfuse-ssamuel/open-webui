@@ -3854,6 +3854,34 @@ async def process_chat_response(
                                         user_id=user.id,
                                     )
                                     log.info(f"Linked {len(file_ids)} generated files to chat {metadata['chat_id']}, message {metadata['message_id']}")
+
+                                    artifact_file_entries = []
+                                    for artifact in all_generated_artifacts:
+                                        artifact_url = artifact.get("url")
+                                        artifact_name = artifact.get("name")
+                                        artifact_file_id = artifact.get("fileId")
+                                        if artifact_url and artifact_name:
+                                            artifact_file_entries.append({
+                                                "type": "file",
+                                                "id": artifact_file_id,
+                                                "url": artifact_url,
+                                                "name": artifact_name,
+                                                "content_type": artifact.get("meta", {}).get(
+                                                    "content_type",
+                                                    "application/octet-stream"
+                                                ),
+                                            })
+                                    if artifact_file_entries:
+                                        Chats.add_message_files_by_id_and_message_id(
+                                            metadata["chat_id"],
+                                            metadata["message_id"],
+                                            artifact_file_entries,
+                                        )
+                                        log.info(
+                                            f"Added {len(artifact_file_entries)} artifact file entries "
+                                            f"to message {metadata['message_id']} inline files array"
+                                        )
+                                        
                             except Exception as e:
                                 log.error(f"Error linking generated files to chat {metadata.get('chat_id')}, message {metadata.get('message_id')}: {e}")
 

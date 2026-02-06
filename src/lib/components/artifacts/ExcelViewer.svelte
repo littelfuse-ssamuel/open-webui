@@ -940,10 +940,20 @@
 		background: #f8f9fa;
 	}
 
-	.excel-viewer-wrapper:fullscreen {
+	:global(.excel-viewer-wrapper:fullscreen) {
 		background: white;
+		height: 100vh;
+		width: 100vw;
 	}
 
+	:global(.excel-viewer-wrapper:fullscreen) .excel-viewer {
+		height: 100vh;
+	}
+
+	:global(.excel-viewer-wrapper:fullscreen) .excel-univer-container {
+		height: 100%;
+	}
+	
 	.excel-viewer {
 		display: flex;
 		flex-direction: column;

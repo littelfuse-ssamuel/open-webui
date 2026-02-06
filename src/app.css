@@ -810,6 +810,7 @@ body {
 
 /* Citation image size constraint - added for LFRAG datasheet images */
 .citation-image img {
-  max-width: 800px;
-  height: auto;
+  max-width: 800px !important;
+  height: auto !important;
+  display: block;
 }
