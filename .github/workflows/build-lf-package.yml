@@ -87,14 +87,11 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '22'
-        cache: 'npm'
     
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
-        cache: 'pip'
-        cache-dependency-path: 'requirements*.txt'
     
     - name: Install build dependencies
       run: |
@@ -220,12 +217,8 @@ jobs:
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         platforms: linux/amd64
-        # Registry cache (works on GHES)
-        cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-lf:buildcache
-        cache-to: type=registry,ref=ghcr.io/${{ github.repository }}-lf:buildcache,mode=max
         build-args: |
           BUILD_HASH=${{ steps.compute_hash.outputs.build_hash }}
-          BUILDKIT_INLINE_CACHE=1
         # Force no-cache if requested
         no-cache: ${{ github.event.inputs.force_rebuild == 'true' }}
     
@@ -284,13 +277,9 @@ jobs:
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-        # Registry cache (works on GHES)
-        cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-extloader:buildcache
-        cache-to: type=registry,ref=ghcr.io/${{ github.repository }}-extloader:buildcache,mode=max
         platforms: linux/amd64
         build-args: |
           BUILD_HASH=${{ github.sha }}
-          BUILDKIT_INLINE_CACHE=1
 
   build-jupyter-kernel:
     needs: [detect-changes]
@@ -337,13 +326,9 @@ jobs:
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-        # Registry cache (works on GHES)
-        cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-jupyter-kernel:buildcache
-        cache-to: type=registry,ref=ghcr.io/${{ github.repository }}-jupyter-kernel:buildcache,mode=max
         platforms: linux/amd64
         build-args: |
           BUILD_HASH=${{ github.sha }}
-          BUILDKIT_INLINE_CACHE=1
 
   create-release:
     needs: [build-wheel, build-open-webui, build-extloader, build-jupyter-kernel]
