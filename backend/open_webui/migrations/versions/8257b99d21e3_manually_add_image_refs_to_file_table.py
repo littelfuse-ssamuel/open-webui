@@ -1,7 +1,7 @@
 """Manually add image_refs to file table
 
 Revision ID: 8257b99d21e3
-Revises: 3af16a1c9fb6
+Revises: c440947495f3
 Create Date: 2025-08-28 16:30:00.000000
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "8257b99d21e3" # <-- IMPORTANT: Copy the new ID here
-down_revision: Union[str, None] = '3af16a1c9fb6'
+down_revision: Union[str, None] = "c440947495f3"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
