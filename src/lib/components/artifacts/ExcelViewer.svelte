@@ -942,8 +942,12 @@
 
 	:global(.excel-viewer-wrapper:fullscreen) {
 		background: white;
-		height: 100vh;
-		width: 100vw;
+		height: 100vh !important;
+		width: 100vw !important;
+		position: fixed !important;
+		top: 0 !important;
+		left: 0 !important;
+		z-index: 999999 !important;
 	}
 
 	:global(.excel-viewer-wrapper:fullscreen) .excel-viewer {
