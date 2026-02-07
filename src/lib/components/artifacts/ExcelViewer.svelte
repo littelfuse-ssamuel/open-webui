@@ -767,7 +767,26 @@
 		setTimeout(() => {
 			window.dispatchEvent(new Event('resize'));
 		}, FULLSCREEN_TRANSITION_DELAY);
-	}
+		// Force Univer to recalculate layout after fullscreen transition
+		// Univer's render engine caches container dimensions, so we need to:
+		// 1. Force a reflow on the container element
+		// 2. Dispatch resize events at multiple intervals to catch the transition
+		const forceUniverResize = () => {
+			if (containerElement) {
+				// Force reflow by reading then writing layout properties
+				void containerElement.offsetWidth;
+				containerElement.style.width = '100%';
+			}
+			window.dispatchEvent(new Event('resize'));
+		};
+
+		requestAnimationFrame(() => {
+			forceUniverResize();
+			setTimeout(forceUniverResize, 100);
+			setTimeout(forceUniverResize, 300);
+			setTimeout(forceUniverResize, 500);
+		});
+ 	}
 
 	// Warn about unsaved changes before leaving
 	function handleBeforeUnload(e: BeforeUnloadEvent) {
