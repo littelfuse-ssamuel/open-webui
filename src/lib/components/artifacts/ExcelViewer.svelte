@@ -573,6 +573,12 @@
 			await initUniver(workbookData);
 
 			loading = false;
+
+			// Force Univer to recalculate dimensions after loading spinner hides
+			// and the container becomes visible with its final flex-computed size
+			requestAnimationFrame(() => {
+				window.dispatchEvent(new Event('resize'));
+			});
 		} catch (e) {
 			console.error('Error loading workbook:', e);
 			error = e instanceof Error ? e.message : 'Failed to load Excel file';
@@ -1150,6 +1156,7 @@
 	.excel-univer-container {
 		flex: 1;
 		width: 100%;
+		height: 0;
 		min-height: 0;
 		overflow: hidden;
 	}
