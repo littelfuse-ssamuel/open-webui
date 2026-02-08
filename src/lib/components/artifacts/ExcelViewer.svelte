@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy, createEventDispatcher } from 'svelte';
+	import { onMount, onDestroy, createEventDispatcher, tick } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import type { ExcelArtifact, ExcelCellChange } from '$lib/types/excel';
 	import { isValidExcelArtifact, EXCEL_MIME_TYPE } from '$lib/types/excel';
@@ -574,8 +574,9 @@
 
 			loading = false;
 
-			// Force Univer to measure the container now that the loading
-			// spinner is gone and visibility has flipped to 'visible'
+			// Wait for Svelte to flush the DOM update (remove loading spinner,
+			// flip visibility to visible) before measuring container dimensions
+			await tick();
 			applyContainerDimensions();
 		} catch (e) {
 			console.error('Error loading workbook:', e);
@@ -1027,6 +1028,7 @@
 		height: 100%;
 		width: 100%;
 		overflow: hidden;
+		position: relative;
 	}
 
 	.excel-header {
@@ -1143,7 +1145,11 @@
 
 	.excel-loading,
 	.excel-error {
-		flex: 1;
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
 		display: flex;
 		flex-direction: column;
 		align-items: center;
@@ -1151,6 +1157,8 @@
 		gap: 12px;
 		color: #6b7280;
 		padding: 32px;
+		background: #f8f9fa;
+		z-index: 50;
 	}
 
 	.excel-loading-spinner {
