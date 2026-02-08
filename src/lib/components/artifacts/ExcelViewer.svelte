@@ -763,28 +763,27 @@
 	function handleFullscreenChange() {
 		isFullscreen = !!document.fullscreenElement;
 		
-		// Trigger Univer resize after fullscreen state change to ensure proper layout
-		setTimeout(() => {
-			window.dispatchEvent(new Event('resize'));
-		}, FULLSCREEN_TRANSITION_DELAY);
-		// Force Univer to recalculate layout after fullscreen transition
-		// Univer's render engine caches container dimensions, so we need to:
-		// 1. Force a reflow on the container element
-		// 2. Dispatch resize events at multiple intervals to catch the transition
-		const forceUniverResize = () => {
-			if (containerElement) {
-				// Force reflow by reading then writing layout properties
-				void containerElement.offsetWidth;
-				containerElement.style.width = '100%';
-			}
-			window.dispatchEvent(new Event('resize'));
-		};
-
+		// Force Univer to recalculate by explicitly setting container dimensions
+		// Univer's render engine uses ResizeObserver on its container, but since
+		// the CSS width stays "100%" (of a parent that was sized at pane width),
+		// the ResizeObserver doesn't detect the change. Setting explicit pixel
+		// values forces a true dimension change that Univer will pick up.
 		requestAnimationFrame(() => {
-			forceUniverResize();
-			setTimeout(forceUniverResize, 100);
-			setTimeout(forceUniverResize, 300);
-			setTimeout(forceUniverResize, 500);
+			if (containerElement) {
+				if (isFullscreen) {
+					// Set explicit viewport dimensions to force ResizeObserver trigger
+					containerElement.style.width = `${window.innerWidth}px`;
+					containerElement.style.height = `${window.innerHeight - (containerElement.getBoundingClientRect().top - wrapperElement.getBoundingClientRect().top)}px`;
+				} else {
+					// Reset to CSS-driven sizing
+					containerElement.style.width = '100%';
+					containerElement.style.height = '';
+				}
+			}
+			// Also dispatch resize as a fallback
+			setTimeout(() => {
+				window.dispatchEvent(new Event('resize'));
+			}, 100);
 		});
  	}
 
