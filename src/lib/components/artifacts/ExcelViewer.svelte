@@ -574,11 +574,9 @@
 
 			loading = false;
 
-			// Force Univer to recalculate dimensions after loading spinner hides
-			// and the container becomes visible with its final flex-computed size
-			requestAnimationFrame(() => {
-				window.dispatchEvent(new Event('resize'));
-			});
+			// Force Univer to measure the container now that the loading
+			// spinner is gone and visibility has flipped to 'visible'
+			applyContainerDimensions();
 		} catch (e) {
 			console.error('Error loading workbook:', e);
 			error = e instanceof Error ? e.message : 'Failed to load Excel file';
@@ -765,6 +763,24 @@
 		// which ensures it stays in sync regardless of how fullscreen is entered/exited
 	}
 
+	// Apply explicit pixel dimensions to the Univer container so its
+	// ResizeObserver detects the actual available space. Univer's canvas
+	// engine only reflows when it sees a concrete pixel-size change.
+	function applyContainerDimensions() {
+		if (!containerElement || !wrapperElement) return;
+		requestAnimationFrame(() => {
+			if (!containerElement) return;
+			const rect = containerElement.getBoundingClientRect();
+			if (rect.width > 0 && rect.height > 0) {
+				containerElement.style.width = `${rect.width}px`;
+				containerElement.style.height = `${rect.height}px`;
+			}
+			setTimeout(() => {
+				window.dispatchEvent(new Event('resize'));
+			}, 100);
+		});
+	}
+
 	// Handle fullscreen change
 	function handleFullscreenChange() {
 		isFullscreen = !!document.fullscreenElement;
@@ -781,9 +797,14 @@
 					containerElement.style.width = `${window.innerWidth}px`;
 					containerElement.style.height = `${window.innerHeight - (containerElement.getBoundingClientRect().top - wrapperElement.getBoundingClientRect().top)}px`;
 				} else {
-					// Reset to CSS-driven sizing
-					containerElement.style.width = '100%';
+					// Reset inline styles so flex layout re-computes, then
+					// re-apply explicit pixel dimensions for Univer
+					containerElement.style.width = '';
 					containerElement.style.height = '';
+					// Allow one frame for flex to settle, then lock to pixels
+					requestAnimationFrame(() => {
+						applyContainerDimensions();
+					});
 				}
 			}
 			// Also dispatch resize as a fallback
@@ -802,14 +823,32 @@
 		}
 	}
 
+	let resizeObserver: ResizeObserver | null = null;
+
 	onMount(() => {
 		document.addEventListener('fullscreenchange', handleFullscreenChange);
 		window.addEventListener('beforeunload', handleBeforeUnload);
+
+		// Watch for pane resize (e.g. split-pane divider drag) and
+		// re-apply pixel dimensions so Univer's canvas stays in sync
+		resizeObserver = new ResizeObserver(() => {
+			if (univerLoaded && !isFullscreen) {
+				applyContainerDimensions();
+			}
+		});
+		if (wrapperElement) {
+			resizeObserver.observe(wrapperElement);
+		}
 	});
 
 	onDestroy(() => {
 		document.removeEventListener('fullscreenchange', handleFullscreenChange);
 		window.removeEventListener('beforeunload', handleBeforeUnload);
+
+		if (resizeObserver) {
+			resizeObserver.disconnect();
+			resizeObserver = null;
+		}
 
 		// Cleanup Univer instance
 		if (univer) {
