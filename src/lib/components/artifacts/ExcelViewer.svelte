@@ -769,13 +769,29 @@
 	// ResizeObserver detects the actual available space. Univer's canvas
 	// engine only reflows when it sees a concrete pixel-size change.
 	function applyContainerDimensions() {
-		if (!containerElement || !wrapperElement) return;
+		if (!containerElement) return;
 		requestAnimationFrame(() => {
 			if (!containerElement || !wrapperElement) return;
-			const rect = wrapperElement.getBoundingClientRect();
-			if (rect.width <= 0 || rect.height <= 0) return;
-			containerElement.style.width = '';
-			containerElement.style.height = '';
+			const wrapperRect = wrapperElement.getBoundingClientRect();
+			const containerRect = containerElement.getBoundingClientRect();
+			const topOffset = containerRect.top - wrapperRect.top;
+			const availableWidth = wrapperRect.width;
+			const availableHeight = wrapperRect.height - topOffset;
+
+			if (availableWidth <= 0 || availableHeight <= 0) return;
+
+			const currentWidth = containerElement.style.width || `${availableWidth}px`;
+			const currentHeight = containerElement.style.height || `${availableHeight}px`;
+			const newWidth = `${availableWidth}px`;
+			const newHeight = `${availableHeight}px`;
+
+			if (currentWidth === newWidth && currentHeight === newHeight) {
+				console.debug('Dimensions unchanged - skipping apply to avoid loops');
+				return;
+			}
+			console.debug('Applying new dimensions:', { newWidth, newHeight });
+			containerElement.style.width = newWidth;
+			containerElement.style.height = newHeight;
 
 			setTimeout(() => {
 				window.dispatchEvent(new Event('resize'));
@@ -815,12 +831,17 @@
 		setTimeout(() => {
 			requestAnimationFrame(() => {
 				if (!containerElement || !wrapperElement) return;
-				
-				containerElement.style.width = '';
-				containerElement.style.height = '';
-				requestAnimationFrame(() => {
+
+				if (isFullscreen) {
 					applyContainerDimensions();
-				});
+				} else {
+					containerElement.style.width = '';
+					containerElement.style.height = '';
+
+					requestAnimationFrame(() => {
+						applyContainerDimensions();
+					});
+				}
 
 				window.dispatchEvent(new Event('resize'));
 				forceUniverResize();
