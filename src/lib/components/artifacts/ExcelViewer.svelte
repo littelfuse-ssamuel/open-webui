@@ -1313,9 +1313,12 @@
 
 	.excel-univer-container :global(.univer-workbench),
 	.excel-univer-container :global(.univer-workbench-container),
+	.excel-univer-container :global(.univer-workbench-layout),
 	.excel-univer-container :global(.univer-sheet-container) {
 		width: 100% !important;
 		max-width: 100% !important;
+		min-width: 0 !important;
+		flex: 1 1 auto !important;
 	}
 
 	/* Fullscreen-specific overrides for Univer width */
@@ -1323,9 +1326,12 @@
 	:global(.excel-viewer-wrapper:fullscreen) .excel-univer-container :global(.univer-container),
 	:global(.excel-viewer-wrapper:fullscreen) .excel-univer-container :global(.univer-workbench),
 	:global(.excel-viewer-wrapper:fullscreen) .excel-univer-container :global(.univer-workbench-container),
+	:global(.excel-viewer-wrapper:fullscreen) .excel-univer-container :global(.univer-workbench-layout),
 	:global(.excel-viewer-wrapper:fullscreen) .excel-univer-container :global(.univer-sheet-container) {
 		width: 100% !important;
 		max-width: 100% !important;
+		min-width: 0 !important;
+		flex: 1 1 auto !important;
 	}
 
 	/* Dark mode support */
