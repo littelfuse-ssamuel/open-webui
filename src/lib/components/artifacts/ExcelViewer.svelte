@@ -31,6 +31,7 @@
 
 	// Track if Univer modules are loaded
 	let univerLoaded = false;
+	let renderManagerServiceToken: any = null;
 
 	// Dynamically import Univer modules
 	async function loadUniverModules() {
@@ -39,7 +40,7 @@
 				// Core modules
 				{ Univer, LocaleType, UniverInstanceType },
 				{ defaultTheme },
-				{ UniverRenderEnginePlugin },
+				{ UniverRenderEnginePlugin, IRenderManagerService },
 				{ UniverFormulaEnginePlugin },
 				{ UniverUIPlugin },
 				{ UniverDocsPlugin },
@@ -134,6 +135,7 @@
 				UniverInstanceType,
 				defaultTheme,
 				UniverRenderEnginePlugin,
+				IRenderManagerService,
 				UniverFormulaEnginePlugin,
 				UniverUIPlugin,
 				UniverDocsPlugin,
@@ -398,6 +400,7 @@
 			UniverInstanceType,
 			defaultTheme,
 			UniverRenderEnginePlugin,
+			IRenderManagerService,
 			UniverFormulaEnginePlugin,
 			UniverUIPlugin,
 			UniverDocsPlugin,
@@ -419,6 +422,7 @@
 			UniverSheetsSortUIPlugin,
 			locales
 		} = modules;
+		renderManagerServiceToken = IRenderManagerService;
 
 		// Create Univer instance
 		univer = new Univer({
@@ -769,29 +773,13 @@
 	// ResizeObserver detects the actual available space. Univer's canvas
 	// engine only reflows when it sees a concrete pixel-size change.
 	function applyContainerDimensions() {
-		if (!containerElement) return;
+		if (!containerElement || !wrapperElement) return;
 		requestAnimationFrame(() => {
 			if (!containerElement || !wrapperElement) return;
-			const wrapperRect = wrapperElement.getBoundingClientRect();
-			const containerRect = containerElement.getBoundingClientRect();
-			const topOffset = containerRect.top - wrapperRect.top;
-			const availableWidth = wrapperRect.width;
-			const availableHeight = wrapperRect.height - topOffset;
-
-			if (availableWidth <= 0 || availableHeight <= 0) return;
-
-			const currentWidth = containerElement.style.width || `${availableWidth}px`;
-			const currentHeight = containerElement.style.height || `${availableHeight}px`;
-			const newWidth = `${availableWidth}px`;
-			const newHeight = `${availableHeight}px`;
-
-			if (currentWidth === newWidth && currentHeight === newHeight) {
-				console.debug('Dimensions unchanged - skipping apply to avoid loops');
-				return;
-			}
-			console.debug('Applying new dimensions:', { newWidth, newHeight });
-			containerElement.style.width = newWidth;
-			containerElement.style.height = newHeight;
+			const rect = wrapperElement.getBoundingClientRect();
+			if (rect.width <= 0 || rect.height <= 0) return;
+			containerElement.style.width = '';
+			containerElement.style.height = '';
 
 			setTimeout(() => {
 				window.dispatchEvent(new Event('resize'));
@@ -801,11 +789,13 @@
 	}
 
 	function forceUniverResize() {
-		if (!univer || !univerAPI) return;
+		if (!univer || !univerAPI || !renderManagerServiceToken) return;
 
 		try {
 			const injector = univer.__getInjector();
-			const renderManager = injector.get(IRenderManagerService);
+			if (!injector) return;
+			const renderManager = injector.get(renderManagerServiceToken);
+			if (!renderManager) return;
 			const unitId = univerAPI.getActiveWorkbook().getUnitId();
 			const render = renderManager.getRenderById(unitId);
 
@@ -831,17 +821,11 @@
 		setTimeout(() => {
 			requestAnimationFrame(() => {
 				if (!containerElement || !wrapperElement) return;
-
-				if (isFullscreen) {
+				containerElement.style.width = '';
+				containerElement.style.height = '';
+				requestAnimationFrame(() => {
 					applyContainerDimensions();
-				} else {
-					containerElement.style.width = '';
-					containerElement.style.height = '';
-
-					requestAnimationFrame(() => {
-						applyContainerDimensions();
-					});
-				}
+				});
 
 				window.dispatchEvent(new Event('resize'));
 				forceUniverResize();
