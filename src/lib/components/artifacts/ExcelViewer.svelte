@@ -570,14 +570,15 @@
 			const arrayBuffer = await excelCore.fetchExcelFile(file.url);
 			workbookData = await convertXLSXToUniverData(arrayBuffer);
 
-			await initUniver(workbookData);
-
+			// CRITICAL: Make container visible BEFORE initializing Univer.
+			// Univer's render engine captures container dimensions at mount time.
+			// If the container is hidden or competing for flex space when Univer
+			// mounts its canvas, the canvas will be sized incorrectly.
 			loading = false;
+			await tick(); // Flush DOM: removes spinner overlay, flips visibility to visible
 
-			// Wait for Svelte to flush the DOM update (remove loading spinner,
-			// flip visibility to visible) before measuring container dimensions
-			await tick();
-			applyContainerDimensions();
+			await initUniver(workbookData);
+			applyContainerDimensions(); // Safety net for ResizeObserver
 		} catch (e) {
 			console.error('Error loading workbook:', e);
 			error = e instanceof Error ? e.message : 'Failed to load Excel file';
