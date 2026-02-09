@@ -771,23 +771,11 @@
 	function applyContainerDimensions() {
 		if (!containerElement || !wrapperElement) return;
 		requestAnimationFrame(() => {
-			if (!containerElement) return;
-			const rect = containerElement.getBoundingClientRect();
+			if (!containerElement || !wrapperElement) return;
+			const rect = wrapperElement.getBoundingClientRect();
 			if (rect.width <= 0 || rect.height <= 0) return;
-
-			const currentWidth = containerElement.style.width || `${rect.width}px`;
-			const currentHeight = containerElement.style.height || `${rect.height}px`;
-			const newWidth = `${rect.width}px`;
-			const newHeight = `${rect.height}px`;
-
-			if (currentWidth === newWidth && currentHeight === newHeight) {
-				console.debug('Dimensions unchanged - skipping apply to avoid loops');
-				return;
-			}
-
-			console.debug('Applying new dimensions:', { newWidth, newHeight });
-			containerElement.style.width = newWidth;
-			containerElement.style.height = newHeight;
+			containerElement.style.width = '';
+			containerElement.style.height = '';
 
 			setTimeout(() => {
 				window.dispatchEvent(new Event('resize'));
@@ -827,23 +815,12 @@
 		setTimeout(() => {
 			requestAnimationFrame(() => {
 				if (!containerElement || !wrapperElement) return;
-
-				let topOffset = 0;
-				if (isFullscreen) {
-					const containerRect = containerElement.getBoundingClientRect();
-					const wrapperRect = wrapperElement.getBoundingClientRect();
-					topOffset = containerRect.top - wrapperRect.top;
-
-					containerElement.style.width = `${window.innerWidth}px`;
-					containerElement.style.height = `${window.innerHeight - topOffset}px`;
-				} else {
-					containerElement.style.width = '';
-					containerElement.style.height = '';
-
-					requestAnimationFrame(() => {
-						applyContainerDimensions();
-					});
-				}
+				
+				containerElement.style.width = '';
+				containerElement.style.height = '';
+				requestAnimationFrame(() => {
+					applyContainerDimensions();
+				});
 
 				window.dispatchEvent(new Event('resize'));
 				forceUniverResize();
