@@ -11,7 +11,7 @@
 
 	// Constants
 	// Delay to allow fullscreen transition to complete before triggering Univer resize
-	const FULLSCREEN_TRANSITION_DELAY = 150;
+	const FULLSCREEN_TRANSITION_DELAY = 200;
 
 	// State
 	let containerElement: HTMLDivElement;
@@ -812,9 +812,17 @@
 					});
 				}
 
-				// Fallback trigger (helps in some Univer plugin configurations)
 				window.dispatchEvent(new Event('resize'));
 			});
+	        // Force repeated applies to "keep sending" resize triggers (stops after 1s)
+	        const forceInterval = setInterval(() => {
+	            applyContainerDimensions();
+	            window.dispatchEvent(new Event('resize'));
+	        }, 100);
+	
+	        setTimeout(() => {
+	            clearInterval(forceInterval);
+	        }, 1000);
 		}, FULLSCREEN_TRANSITION_DELAY);
  	}
 
@@ -836,7 +844,7 @@
 		// Watch for pane resize (e.g. split-pane divider drag) and
 		// re-apply pixel dimensions so Univer's canvas stays in sync
 		resizeObserver = new ResizeObserver(() => {
-			if (univerLoaded && !isFullscreen) {
+			if (univerLoaded) {
 				applyContainerDimensions();
 			}
 		});
