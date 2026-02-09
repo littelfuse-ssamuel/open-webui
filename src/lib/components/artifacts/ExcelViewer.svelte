@@ -11,7 +11,7 @@
 
 	// Constants
 	// Delay to allow fullscreen transition to complete before triggering Univer resize
-	const FULLSCREEN_TRANSITION_DELAY = 100;
+	const FULLSCREEN_TRANSITION_DELAY = 150;
 
 	// State
 	let containerElement: HTMLDivElement;
@@ -786,34 +786,36 @@
 	// Handle fullscreen change
 	function handleFullscreenChange() {
 		isFullscreen = !!document.fullscreenElement;
-		
-		// Force Univer to recalculate by explicitly setting container dimensions
-		// Univer's render engine uses ResizeObserver on its container, but since
-		// the CSS width stays "100%" (of a parent that was sized at pane width),
-		// the ResizeObserver doesn't detect the change. Setting explicit pixel
-		// values forces a true dimension change that Univer will pick up.
-		requestAnimationFrame(() => {
-			if (containerElement) {
+
+		// Give browser time to finish fullscreen transition / reflow
+		setTimeout(() => {
+			requestAnimationFrame(() => {
+				if (!containerElement || !wrapperElement) return;
+
 				if (isFullscreen) {
-					// Set explicit viewport dimensions to force ResizeObserver trigger
-					containerElement.style.width = `${window.innerWidth}px`;
-					containerElement.style.height = `${window.innerHeight - (containerElement.getBoundingClientRect().top - wrapperElement.getBoundingClientRect().top)}px`;
+					// Recalculate fresh bounding rects after transition settled
+					const containerRect = containerElement.getBoundingClientRect();
+					const wrapperRect   = wrapperElement.getBoundingClientRect();
+					const topOffset     = containerRect.top - wrapperRect.top;
+
+					// Use full viewport width + accurate height accounting for any fixed header/notice
+					containerElement.style.width  = `${window.innerWidth}px`;
+					containerElement.style.height = `${window.innerHeight - topOffset}px`;
 				} else {
-					// Reset inline styles so flex layout re-computes, then
-					// re-apply explicit pixel dimensions for Univer
-					containerElement.style.width = '';
+					// Reset inline styles → let flex layout breathe
+					containerElement.style.width  = '';
 					containerElement.style.height = '';
-					// Allow one frame for flex to settle, then lock to pixels
+
+					// Then immediately lock to correct pixel size again
 					requestAnimationFrame(() => {
 						applyContainerDimensions();
 					});
 				}
-			}
-			// Also dispatch resize as a fallback
-			setTimeout(() => {
+
+				// Fallback trigger (helps in some Univer plugin configurations)
 				window.dispatchEvent(new Event('resize'));
-			}, 100);
-		});
+			});
+		}, FULLSCREEN_TRANSITION_DELAY);
  	}
 
 	// Warn about unsaved changes before leaving
