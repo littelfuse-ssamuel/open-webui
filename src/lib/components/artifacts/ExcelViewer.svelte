@@ -11,7 +11,7 @@
 
 	// Constants
 	// Delay to allow fullscreen transition to complete before triggering Univer resize
-	const FULLSCREEN_TRANSITION_DELAY = 200;
+	const FULLSCREEN_TRANSITION_DELAY = 300;
 
 	// State
 	let containerElement: HTMLDivElement;
@@ -1030,7 +1030,6 @@
 	}
 
 	:global(.excel-viewer-wrapper:fullscreen) .excel-univer-container {
-		height: 100%;
 	}
 	
 	.excel-viewer {
@@ -1214,8 +1213,6 @@
 	.excel-univer-container {
 		flex: 1;
 		width: 100%;
-		height: 0;
-		min-height: 0;
 		overflow: hidden;
 	}
 
