@@ -773,56 +773,90 @@
 		requestAnimationFrame(() => {
 			if (!containerElement) return;
 			const rect = containerElement.getBoundingClientRect();
-			if (rect.width > 0 && rect.height > 0) {
-				containerElement.style.width = `${rect.width}px`;
-				containerElement.style.height = `${rect.height}px`;
+			if (rect.width <= 0 || rect.height <= 0) return;
+
+			const currentWidth = containerElement.style.width || `${rect.width}px`;
+			const currentHeight = containerElement.style.height || `${rect.height}px`;
+			const newWidth = `${rect.width}px`;
+			const newHeight = `${rect.height}px`;
+
+			if (currentWidth === newWidth && currentHeight === newHeight) {
+				console.debug('Dimensions unchanged - skipping apply to avoid loops');
+				return;
 			}
+
+			console.debug('Applying new dimensions:', { newWidth, newHeight });
+			containerElement.style.width = newWidth;
+			containerElement.style.height = newHeight;
+
 			setTimeout(() => {
 				window.dispatchEvent(new Event('resize'));
+				forceUniverResize();
 			}, 100);
 		});
 	}
 
+	function forceUniverResize() {
+		if (!univer || !univerAPI) return;
+
+		try {
+			const injector = univer.__getInjector();
+			const renderManager = injector.get(IRenderManagerService);
+			const unitId = univerAPI.getActiveWorkbook().getUnitId();
+			const render = renderManager.getRenderById(unitId);
+
+			if (render && render.engine) {
+				render.engine.resize();
+				if (render.scene) {
+					render.scene.resize();
+					console.log('Forced Univer scene resize');
+				}
+				console.log('Forced Univer engine resize');
+			} else {
+				console.warn('Could not access Univer render engine');
+			}
+		} catch (e) {
+			console.error('Error forcing Univer resize:', e);
+		}
+	}
+			
 	// Handle fullscreen change
 	function handleFullscreenChange() {
 		isFullscreen = !!document.fullscreenElement;
 
-		// Give browser time to finish fullscreen transition / reflow
 		setTimeout(() => {
 			requestAnimationFrame(() => {
 				if (!containerElement || !wrapperElement) return;
 
+				let topOffset = 0;
 				if (isFullscreen) {
-					// Recalculate fresh bounding rects after transition settled
 					const containerRect = containerElement.getBoundingClientRect();
-					const wrapperRect   = wrapperElement.getBoundingClientRect();
-					const topOffset     = containerRect.top - wrapperRect.top;
+					const wrapperRect = wrapperElement.getBoundingClientRect();
+					topOffset = containerRect.top - wrapperRect.top;
 
-					// Use full viewport width + accurate height accounting for any fixed header/notice
-					containerElement.style.width  = `${window.innerWidth}px`;
+					containerElement.style.width = `${window.innerWidth}px`;
 					containerElement.style.height = `${window.innerHeight - topOffset}px`;
 				} else {
-					// Reset inline styles → let flex layout breathe
-					containerElement.style.width  = '';
+					containerElement.style.width = '';
 					containerElement.style.height = '';
 
-					// Then immediately lock to correct pixel size again
 					requestAnimationFrame(() => {
 						applyContainerDimensions();
 					});
 				}
 
 				window.dispatchEvent(new Event('resize'));
+				forceUniverResize();
 			});
-	        // Force repeated applies to "keep sending" resize triggers (stops after 1s)
-	        const forceInterval = setInterval(() => {
-	            applyContainerDimensions();
-	            window.dispatchEvent(new Event('resize'));
-	        }, 100);
-	
-	        setTimeout(() => {
-	            clearInterval(forceInterval);
-	        }, 1000);
+
+			let attempts = 0;
+			const forceInterval = setInterval(() => {
+				applyContainerDimensions();
+				window.dispatchEvent(new Event('resize'));
+				forceUniverResize();
+				attempts++;
+      			if (attempts >= 3) clearInterval(forceInterval);
+			}, 200);
 		}, FULLSCREEN_TRANSITION_DELAY);
  	}
 
