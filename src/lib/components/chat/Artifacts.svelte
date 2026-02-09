@@ -3,6 +3,7 @@
 	import { onMount, getContext, createEventDispatcher } from 'svelte';
 	const i18n = getContext('i18n');
 	const dispatch = createEventDispatcher();
+	const UNIVER_TRACE_KEY = 'lfrag.univer.trace';
 
 	import {
 		artifactCode,
@@ -36,6 +37,27 @@
 
 	let copied = false;
 	let iframeElement: HTMLIFrameElement;
+
+	function isTraceEnabled() {
+		if (typeof window === 'undefined') return false;
+		try {
+			if (localStorage.getItem(UNIVER_TRACE_KEY) === '1') return true;
+			return new URLSearchParams(window.location.search).get('univerTrace') === '1';
+		} catch {
+			return false;
+		}
+	}
+
+	function trace(event: string, data: Record<string, any> = {}) {
+		if (!isTraceEnabled()) return;
+		console.debug('[UNIVER_TRACE][Artifacts]', {
+			event,
+			at: new Date().toISOString(),
+			selectedContentIdx,
+			selectedType: contents?.[selectedContentIdx]?.type ?? null,
+			...data
+		});
+	}
 
 	function navigateContent(direction: 'prev' | 'next') {
 		selectedContentIdx =
@@ -77,10 +99,18 @@
 
 	const showFullScreen = () => {
 		const content = contents[selectedContentIdx];
+		trace('showFullScreen:click', {
+			type: content?.type ?? null,
+			totalContents: contents?.length ?? 0
+		});
 
 		// For Excel, fullscreen is handled by the ExcelViewer component itself
 		if (content?.type === 'excel') {
 			const excelContainer = document.querySelector('.excel-viewer-wrapper');
+			trace('showFullScreen:excelTarget', {
+				found: !!excelContainer,
+				className: (excelContainer as HTMLElement)?.className ?? null
+			});
 			if (excelContainer?.requestFullscreen) {
 				excelContainer.requestFullscreen();
 			}
@@ -99,6 +129,10 @@
 		// For PPTX, fullscreen is handled by the PptxViewer component
 		if (content?.type === 'pptx') {
 			const pptxContainer = document.querySelector('.pptx-viewer-wrapper');
+			trace('showFullScreen:pptxTarget', {
+				found: !!pptxContainer,
+				className: (pptxContainer as HTMLElement)?.className ?? null
+			});
 			if (pptxContainer?.requestFullscreen) {
 				pptxContainer.requestFullscreen();
 			}
@@ -152,16 +186,19 @@
 	};
 
 	onMount(() => {
+		trace('onMount');
 		artifactCode.subscribe((value) => {
 			if (contents) {
 				const codeIdx = contents.findIndex((content) => content.content.includes(value));
 				selectedContentIdx = codeIdx !== -1 ? codeIdx : 0;
+				trace('artifactCode:select', { codeIdx, selectedContentIdx });
 			}
 		});
 
 		artifactContents.subscribe((value) => {
 			contents = value;
 			console.log('Artifact contents updated:', contents);
+			trace('artifactContents:update', { count: contents?.length ?? 0 });
 
 			if (contents.length === 0) {
 				showControls.set(false);

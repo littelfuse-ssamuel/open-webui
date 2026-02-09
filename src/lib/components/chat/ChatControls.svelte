@@ -18,6 +18,7 @@
 	import Drawer from '../common/Drawer.svelte';
 	import Artifacts from './Artifacts.svelte';
 	import Embeds from './ChatControls/Embeds.svelte';
+	const UNIVER_TRACE_KEY = 'lfrag.univer.trace';
 
 	export let history;
 	export let models = [];
@@ -42,19 +43,48 @@
 
 	let minSize = 0;
 
+	function isTraceEnabled() {
+		if (typeof window === 'undefined') return false;
+		try {
+			if (localStorage.getItem(UNIVER_TRACE_KEY) === '1') return true;
+			return new URLSearchParams(window.location.search).get('univerTrace') === '1';
+		} catch {
+			return false;
+		}
+	}
+
+	function trace(event: string, data: Record<string, any> = {}) {
+		if (!isTraceEnabled()) return;
+		console.debug('[UNIVER_TRACE][ChatControls]', {
+			event,
+			at: new Date().toISOString(),
+			showControls: $showControls,
+			showArtifacts: $showArtifacts,
+			minSize,
+			...data
+		});
+	}
+
 	export const openPane = () => {
 		if (parseInt(localStorage?.chatControlsSize)) {
 			const container = document.getElementById('chat-container');
 			let size = Math.floor(
 				(parseInt(localStorage?.chatControlsSize) / container.clientWidth) * 100
 			);
+			trace('openPane:storedSize', {
+				containerWidth: container?.clientWidth ?? null,
+				storedPixels: parseInt(localStorage?.chatControlsSize),
+				calculatedPercent: size
+			});
 			pane.resize(size);
 		} else {
+			trace('openPane:minSize', { targetPercent: minSize });
 			pane.resize(minSize);
 		}
 	};
 
 	const handleMediaQuery = async (e) => {
+		trace('handleMediaQuery', { matches: e.matches });
 		if (e.matches) {
 			largeScreen = true;
 
@@ -86,6 +116,7 @@
 	};
 
 	onMount(() => {
+		trace('onMount');
 		// listen to resize 1024px
 		mediaQuery = window.matchMedia('(min-width: 1024px)');
 
@@ -106,6 +137,11 @@
 				const percentage = (350 / width) * 100;
 				// set the minSize to the percentage, must be an integer
 				minSize = Math.floor(percentage);
+				trace('chatContainer:resizeObserver', {
+					containerWidth: width,
+					calculatedMinSize: minSize,
+					paneSize: pane?.getSize?.() ?? null
+				});
 
 				if ($showControls) {
 					if (pane && pane.isExpanded() && pane.getSize() < minSize) {
@@ -130,6 +166,7 @@
 	});
 
 	onDestroy(() => {
+		trace('onDestroy');
 		showControls.set(false);
 
 		mediaQuery.removeEventListener('change', handleMediaQuery);
@@ -230,8 +267,10 @@
 		bind:pane
 		defaultSize={0}
 		onResize={(size) => {
+			trace('pane:onResize', { size });
 			if ($showControls && pane.isExpanded()) {
 				if (size < minSize) {
+					trace('pane:onResize:enforceMin', { size, minSize });
 					pane.resize(minSize);
 				}
 
@@ -241,10 +280,16 @@
 					// save the size in  pixels to localStorage
 					const container = document.getElementById('chat-container');
 					localStorage.chatControlsSize = Math.floor((size / 100) * container.clientWidth);
+					trace('pane:onResize:save', {
+						sizePercent: size,
+						containerWidth: container?.clientWidth ?? null,
+						savedPixels: localStorage.chatControlsSize
+					});
 				}
 			}
 		}}
 		onCollapse={() => {
+			trace('pane:onCollapse');
 			showControls.set(false);
 		}}
 		collapsible={true}

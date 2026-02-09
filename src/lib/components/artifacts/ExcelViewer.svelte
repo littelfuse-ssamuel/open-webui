@@ -12,6 +12,7 @@
 	// Constants
 	// Delay to allow fullscreen transition to complete before triggering Univer resize
 	const FULLSCREEN_TRANSITION_DELAY = 300;
+	const UNIVER_TRACE_KEY = 'lfrag.univer.trace';
 
 	// State
 	let containerElement: HTMLDivElement;
@@ -32,6 +33,27 @@
 	// Track if Univer modules are loaded
 	let univerLoaded = false;
 	let renderManagerServiceToken: any = null;
+
+	function isTraceEnabled() {
+		if (typeof window === 'undefined') return false;
+		try {
+			if (localStorage.getItem(UNIVER_TRACE_KEY) === '1') return true;
+			return new URLSearchParams(window.location.search).get('univerTrace') === '1';
+		} catch {
+			return false;
+		}
+	}
+
+	function trace(event: string, data: Record<string, any> = {}) {
+		if (!isTraceEnabled()) return;
+		const payload = {
+			event,
+			at: new Date().toISOString(),
+			file: file?.name ?? null,
+			...data
+		};
+		console.debug('[UNIVER_TRACE][ExcelViewer]', payload);
+	}
 
 	// Dynamically import Univer modules
 	async function loadUniverModules() {
@@ -392,6 +414,9 @@
 	// Initialize Univer with workbook data
 	async function initUniver(data: any) {
 		if (!containerElement) return;
+		trace('initUniver:start', {
+			containerRect: containerElement?.getBoundingClientRect?.()
+		});
 
 		const modules = await loadUniverModules();
 		const {
@@ -540,12 +565,16 @@
 		});
 
 		univerLoaded = true;
+		trace('initUniver:done', {
+			containerRect: containerElement?.getBoundingClientRect?.()
+		});
 		console.log('Univer initialized successfully with formula bar, sheet tabs, and chart support');
 	}
 
 	// Load workbook from URL
 	async function loadWorkbook() {
 		if (!file?.url) return;
+		trace('loadWorkbook:start', { url: file.url });
 
 		// Phase 2: Validate artifact structure
 		if (!isValidExcelArtifact(file)) {
@@ -573,6 +602,7 @@
 			// Use excelCore service for consistent fetch with cache-busting
 			const arrayBuffer = await excelCore.fetchExcelFile(file.url);
 			workbookData = await convertXLSXToUniverData(arrayBuffer);
+			trace('loadWorkbook:fetched', { bytes: arrayBuffer?.byteLength ?? null });
 
 			// CRITICAL: Make container visible BEFORE initializing Univer.
 			// Univer's render engine captures container dimensions at mount time.
@@ -583,6 +613,10 @@
 
 			await initUniver(workbookData);
 			applyContainerDimensions(); // Safety net for ResizeObserver
+			trace('loadWorkbook:initialized', {
+				wrapperRect: wrapperElement?.getBoundingClientRect?.(),
+				containerRect: containerElement?.getBoundingClientRect?.()
+			});
 		} catch (e) {
 			console.error('Error loading workbook:', e);
 			error = e instanceof Error ? e.message : 'Failed to load Excel file';
@@ -759,6 +793,11 @@
 	// Toggle fullscreen
 	function toggleFullscreen() {
 		if (!wrapperElement) return;
+		trace('toggleFullscreen:click', {
+			hasFullscreenElement: !!document.fullscreenElement,
+			fullscreenElementTag: document.fullscreenElement?.tagName ?? null,
+			fullscreenElementClass: (document.fullscreenElement as HTMLElement)?.className ?? null
+		});
 
 		if (!document.fullscreenElement) {
 			wrapperElement.requestFullscreen?.();
@@ -778,6 +817,10 @@
 			if (!containerElement || !wrapperElement) return;
 			const rect = wrapperElement.getBoundingClientRect();
 			if (rect.width <= 0 || rect.height <= 0) return;
+			trace('applyContainerDimensions', {
+				wrapperRect: rect,
+				containerRectBefore: containerElement.getBoundingClientRect()
+			});
 			containerElement.style.width = '';
 			containerElement.style.height = '';
 
@@ -800,6 +843,12 @@
 			const render = renderManager.getRenderById(unitId);
 
 			if (render && render.engine) {
+				trace('forceUniverResize:engine', {
+					unitId,
+					hasScene: !!render.scene,
+					wrapperRect: wrapperElement?.getBoundingClientRect?.(),
+					containerRect: containerElement?.getBoundingClientRect?.()
+				});
 				render.engine.resize();
 				if (render.scene) {
 					render.scene.resize();
@@ -817,6 +866,12 @@
 	// Handle fullscreen change
 	function handleFullscreenChange() {
 		isFullscreen = !!document.fullscreenElement;
+		trace('fullscreenchange', {
+			isFullscreen,
+			fullscreenElementTag: document.fullscreenElement?.tagName ?? null,
+			fullscreenElementClass: (document.fullscreenElement as HTMLElement)?.className ?? null,
+			wrapperIsFullscreenTarget: document.fullscreenElement === wrapperElement
+		});
 
 		setTimeout(() => {
 			requestAnimationFrame(() => {
@@ -833,6 +888,7 @@
 
 			let attempts = 0;
 			const forceInterval = setInterval(() => {
+				trace('fullscreenchange:interval', { attempt: attempts + 1 });
 				applyContainerDimensions();
 				window.dispatchEvent(new Event('resize'));
 				forceUniverResize();
@@ -856,11 +912,19 @@
 	onMount(() => {
 		document.addEventListener('fullscreenchange', handleFullscreenChange);
 		window.addEventListener('beforeunload', handleBeforeUnload);
+		trace('onMount', {
+			wrapperRect: wrapperElement?.getBoundingClientRect?.(),
+			containerRect: containerElement?.getBoundingClientRect?.()
+		});
 
 		// Watch for pane resize (e.g. split-pane divider drag) and
 		// re-apply pixel dimensions so Univer's canvas stays in sync
 		resizeObserver = new ResizeObserver(() => {
 			if (univerLoaded) {
+				trace('wrapper:resizeObserver', {
+					wrapperRect: wrapperElement?.getBoundingClientRect?.(),
+					containerRect: containerElement?.getBoundingClientRect?.()
+				});
 				applyContainerDimensions();
 			}
 		});
@@ -870,6 +934,7 @@
 	});
 
 	onDestroy(() => {
+		trace('onDestroy');
 		document.removeEventListener('fullscreenchange', handleFullscreenChange);
 		window.removeEventListener('beforeunload', handleBeforeUnload);
 
@@ -898,6 +963,7 @@
 		currentLoadedUrl = file.url;
 		// Reset loading state if needed when URL changes
 		univerLoaded = false; 
+		trace('reactive:fileUrlChanged', { url: file.url });
 		loadWorkbook();
 	}
 
