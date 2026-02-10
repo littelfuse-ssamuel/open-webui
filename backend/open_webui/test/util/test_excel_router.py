@@ -146,9 +146,10 @@ def test_formula_qc_detects_critical_invalid_tokens(tmp_path: Path):
     wb.close()
 
     wb2 = openpyxl.load_workbook(file_path, data_only=False)
-    issues = excel_router._run_formula_qc_and_repairs(wb2)
+    issues, repairs_applied = excel_router._run_formula_qc_and_repairs(wb2)
     wb2.close()
 
+    assert repairs_applied == 0
     assert any(i.issueType == "invalid_reference_token" and i.severity == "critical" for i in issues)
 
 
@@ -162,11 +163,29 @@ def test_formula_qc_auto_repairs_double_equals(tmp_path: Path):
     wb.close()
 
     wb2 = openpyxl.load_workbook(file_path, data_only=False)
-    issues = excel_router._run_formula_qc_and_repairs(wb2)
+    issues, repairs_applied = excel_router._run_formula_qc_and_repairs(wb2)
     assert wb2["Sheet1"]["A1"].value == "=SUM(B1:B2)"
     wb2.close()
 
+    assert repairs_applied == 1
     assert any(i.issueType == "auto_repaired_formula_prefix" and i.severity == "warning" for i in issues)
+
+
+def test_formula_qc_detects_missing_sheet_reference(tmp_path: Path):
+    file_path = tmp_path / "qc_missing_sheet.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws["A1"] = "='Missing Sheet'!B2+1"
+    wb.save(file_path)
+    wb.close()
+
+    wb2 = openpyxl.load_workbook(file_path, data_only=False)
+    issues, repairs_applied = excel_router._run_formula_qc_and_repairs(wb2)
+    wb2.close()
+
+    assert repairs_applied == 0
+    assert any(i.issueType == "missing_sheet_reference" and i.severity == "critical" for i in issues)
 
 
 def test_build_qc_report_blocks_on_critical():
@@ -235,3 +254,141 @@ def test_resolve_llm_qc_model_id_returns_none_when_no_candidates_are_configured(
 
     assert model_id is None
     assert source is None
+
+
+def test_preflight_blocks_formula_overwrite_in_strict_mode():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws["A1"] = "=SUM(B1:B2)"
+
+    warnings = excel_router._collect_preflight_warnings(
+        wb=wb,
+        sheet_name="Sheet1",
+        changes=[excel_router.CellChange(row=1, col=1, value=123)],
+    )
+    report = excel_router._build_preflight_report(
+        warnings=warnings,
+        strict_formula_mode=True,
+        block_referenced_by_formula=False,
+        allow_formula_overwrite=False,
+    )
+    wb.close()
+
+    assert any(w.warning_type == "contains_formula" for w in warnings)
+    assert report.safe_to_apply is False
+    assert report.status == "blocked"
+
+
+def test_preflight_allows_formula_overwrite_when_forced_per_cell():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws["A1"] = "=SUM(B1:B2)"
+
+    warnings = excel_router._collect_preflight_warnings(
+        wb=wb,
+        sheet_name="Sheet1",
+        changes=[
+            excel_router.CellChange(
+                row=1,
+                col=1,
+                value=123,
+                forceOverwriteFormula=True,
+            )
+        ],
+    )
+    report = excel_router._build_preflight_report(
+        warnings=warnings,
+        strict_formula_mode=True,
+        block_referenced_by_formula=False,
+        allow_formula_overwrite=False,
+    )
+    wb.close()
+
+    assert report.safe_to_apply is True
+    assert report.status == "ok"
+
+
+def test_preflight_detects_cross_sheet_formula_dependencies():
+    wb = openpyxl.Workbook()
+    ws1 = wb.active
+    ws1.title = "Sheet1"
+    ws1["A1"] = 10
+    ws2 = wb.create_sheet("Sheet2")
+    ws2["A1"] = "=Sheet1!A1+1"
+
+    warnings = excel_router._collect_preflight_warnings(
+        wb=wb,
+        sheet_name="Sheet1",
+        changes=[excel_router.CellChange(row=1, col=1, value=11)],
+    )
+    report = excel_router._build_preflight_report(
+        warnings=warnings,
+        strict_formula_mode=False,
+        block_referenced_by_formula=True,
+        allow_formula_overwrite=False,
+    )
+    wb.close()
+
+    dependency_warnings = [w for w in warnings if w.warning_type == "referenced_by_formula"]
+    assert dependency_warnings
+    assert "Sheet2!A1" in dependency_warnings[0].details["referenced_by"]
+    assert report.safe_to_apply is False
+    assert report.status == "blocked"
+
+
+def test_qc_repairs_persist_when_saved_atomically(tmp_path: Path):
+    file_path = tmp_path / "persist_repair.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws["A1"] = "==SUM(B1:B2)"
+    wb.save(file_path)
+    wb.close()
+
+    wb2 = openpyxl.load_workbook(
+        file_path, **excel_router._get_workbook_load_kwargs("persist_repair.xlsx")
+    )
+    issues, repairs_applied = excel_router._run_formula_qc_and_repairs(wb2)
+    assert any(i.issueType == "auto_repaired_formula_prefix" for i in issues)
+    assert repairs_applied == 1
+
+    excel_router._persist_workbook_atomically(
+        wb=wb2,
+        file_path=file_path,
+        load_kwargs=excel_router._get_workbook_load_kwargs("persist_repair.xlsx"),
+        file_id="persist-repair",
+    )
+
+    wb3 = openpyxl.load_workbook(file_path, data_only=False)
+    assert wb3["Sheet1"]["A1"].value == "=SUM(B1:B2)"
+    wb3.close()
+
+
+def test_build_excel_metadata_update_uses_extension_content_type():
+    qc_report = excel_router._build_qc_report([], operation="update")
+    meta_xlsm = excel_router._build_excel_metadata_update(
+        filename="macro.xlsm",
+        sheet_names=["Sheet1"],
+        active_sheet="Sheet1",
+        changes_applied=2,
+        qc_report=qc_report,
+        operation="update",
+        repairs_applied=1,
+    )
+    meta_xlsx = excel_router._build_excel_metadata_update(
+        filename="book.xlsx",
+        sheet_names=["Sheet1"],
+        active_sheet="Sheet1",
+        changes_applied=2,
+        qc_report=qc_report,
+        operation="update",
+        repairs_applied=0,
+    )
+
+    assert meta_xlsm["content_type"] == "application/vnd.ms-excel.sheet.macroEnabled.12"
+    assert (
+        meta_xlsx["content_type"]
+        == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )

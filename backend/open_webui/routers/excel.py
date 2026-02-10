@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import zipfile
 from contextlib import suppress
+from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional, Literal
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -237,6 +238,7 @@ class CellChange(BaseModel):
     col: int  # 1-based column number
     value: Optional[str | int | float | bool] = None
     isFormula: Optional[bool] = False  # Whether the value is a formula (starts with =)
+    forceOverwriteFormula: Optional[bool] = False
 
 
 class ExcelUpdateRequest(BaseModel):
@@ -244,13 +246,19 @@ class ExcelUpdateRequest(BaseModel):
     fileId: str
     sheet: str
     changes: List[CellChange]
+    strictFormulaMode: Optional[bool] = True
+    blockReferencedByFormula: Optional[bool] = True
+    allowFormulaOverwrite: Optional[bool] = False
 
 
 class ExcelUpdateResponse(BaseModel):
     """Response from Excel update operation"""
     status: str
     message: Optional[str] = None
+    preflightReport: Optional["ExcelValidationResponse"] = None
     qcReport: Optional["ExcelQcReport"] = None
+    repairsApplied: Optional[int] = 0
+    metadataUpdated: Optional[bool] = None
 
 
 class ExcelQcIssue(BaseModel):
@@ -286,6 +294,8 @@ class ExcelDownloadReadyResponse(BaseModel):
     qcReport: Optional[ExcelQcReport] = None
     selectedLlmModelId: Optional[str] = None
     selectedLlmModelSource: Optional[str] = None
+    repairsApplied: Optional[int] = 0
+    metadataUpdated: Optional[bool] = None
 
 
 class ExcelMetadataResponse(BaseModel):
@@ -320,9 +330,66 @@ def _build_qc_report(issues: list[ExcelQcIssue], operation: str) -> ExcelQcRepor
     )
 
 
-def _run_formula_qc_and_repairs(wb) -> list[ExcelQcIssue]:
+def _excel_content_type(filename: str) -> str:
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".xlsm":
+        return "application/vnd.ms-excel.sheet.macroEnabled.12"
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _build_excel_metadata_update(
+    filename: str,
+    sheet_names: list[str],
+    active_sheet: Optional[str],
+    changes_applied: int,
+    qc_report: ExcelQcReport,
+    operation: str,
+    repairs_applied: int,
+) -> dict[str, Any]:
+    return {
+        "sheetNames": sheet_names,
+        "activeSheet": active_sheet,
+        "content_type": _excel_content_type(filename),
+        "excel_last_operation": operation,
+        "excel_last_edited_at": datetime.now().isoformat(),
+        "excel_last_changes_applied": changes_applied,
+        "excel_last_repairs_applied": repairs_applied,
+        "excel_qc": {
+            "blocked": qc_report.blocked,
+            "criticalUnresolved": qc_report.criticalUnresolved,
+            "issueCount": len(qc_report.issues),
+            "blockReason": qc_report.blockReason,
+        },
+    }
+
+
+def _update_excel_file_metadata(
+    file_id: str,
+    filename: str,
+    sheet_names: list[str],
+    active_sheet: Optional[str],
+    changes_applied: int,
+    qc_report: ExcelQcReport,
+    operation: str,
+    repairs_applied: int,
+) -> bool:
+    update_payload = _build_excel_metadata_update(
+        filename=filename,
+        sheet_names=sheet_names,
+        active_sheet=active_sheet,
+        changes_applied=changes_applied,
+        qc_report=qc_report,
+        operation=operation,
+        repairs_applied=repairs_applied,
+    )
+    return Files.update_file_metadata_by_id(file_id, update_payload) is not None
+
+
+def _run_formula_qc_and_repairs(wb) -> tuple[list[ExcelQcIssue], int]:
     issues: list[ExcelQcIssue] = []
     invalid_token_re = re.compile(r"#REF!|#NAME\?|#VALUE!", re.IGNORECASE)
+    repairs_applied = 0
+    sheets_by_lower = {sheet.lower(): sheet for sheet in wb.sheetnames}
 
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
@@ -366,8 +433,35 @@ def _run_formula_qc_and_repairs(wb) -> list[ExcelQcIssue]:
                         )
                     )
 
+                refs = _parse_cell_references_from_formula(repaired_formula)
+                missing_sheets = set()
+                for ref in refs:
+                    if "!" not in ref:
+                        continue
+                    referenced_sheet, _ = ref.split("!", 1)
+                    normalized_sheet = _normalize_sheet_name(referenced_sheet)
+                    if normalized_sheet.lower() not in sheets_by_lower:
+                        missing_sheets.add(normalized_sheet)
+
+                for missing_sheet in sorted(missing_sheets):
+                    issues.append(
+                        ExcelQcIssue(
+                            sheet=sheet_name,
+                            cell=f"{get_column_letter(cell.column)}{cell.row}",
+                            severity="critical",
+                            issueType="missing_sheet_reference",
+                            message=(
+                                "Formula references a sheet that does not exist: "
+                                f"'{missing_sheet}'."
+                            ),
+                            originalFormula=formula,
+                            repairedFormula=repaired_formula if repaired else None,
+                        )
+                    )
+
                 if repaired and repaired_formula != formula:
                     cell.value = repaired_formula
+                    repairs_applied += 1
                     issues.append(
                         ExcelQcIssue(
                             sheet=sheet_name,
@@ -380,7 +474,7 @@ def _run_formula_qc_and_repairs(wb) -> list[ExcelQcIssue]:
                         )
                     )
 
-    return issues
+    return issues, repairs_applied
 
 
 def _resolve_llm_qc_model_id(
@@ -447,14 +541,88 @@ async def update_excel_file(
                 detail="File not found in storage",
             )
 
+        preflight_report: Optional[ExcelValidationResponse] = None
+        qc_report: Optional[ExcelQcReport] = None
+        repairs_applied = 0
+        metadata_updated: Optional[bool] = None
+
         try:
-            changes_applied = await _apply_excel_changes_with_lock(
-                file_id=request.fileId,
-                file_path=file_path,
-                filename=file.filename,
-                sheet_name=request.sheet,
-                changes=request.changes,
-            )
+            lock = await _get_excel_file_lock(request.fileId)
+            async with lock:
+                wb = None
+                try:
+                    load_kwargs = _get_workbook_load_kwargs(file.filename)
+                    wb = openpyxl.load_workbook(file_path, **load_kwargs)
+
+                    if request.sheet not in wb.sheetnames:
+                        raise ValueError(f"Sheet '{request.sheet}' not found in workbook.")
+
+                    preflight_warnings = _collect_preflight_warnings(
+                        wb=wb,
+                        sheet_name=request.sheet,
+                        changes=request.changes,
+                    )
+                    preflight_report = _build_preflight_report(
+                        warnings=preflight_warnings,
+                        strict_formula_mode=bool(request.strictFormulaMode),
+                        block_referenced_by_formula=bool(
+                            request.blockReferencedByFormula
+                        ),
+                        allow_formula_overwrite=bool(request.allowFormulaOverwrite),
+                    )
+
+                    if not preflight_report.safe_to_apply:
+                        return ExcelUpdateResponse(
+                            status="blocked",
+                            message="Preflight blocked: formula-safety checks failed",
+                            preflightReport=preflight_report,
+                        )
+
+                    ws = wb[request.sheet]
+                    changes_applied = _apply_worksheet_changes(ws, request.changes)
+
+                    qc_issues, repairs_applied = _run_formula_qc_and_repairs(wb)
+                    qc_report = _build_qc_report(qc_issues, operation="save")
+
+                    if qc_report.blocked:
+                        return ExcelUpdateResponse(
+                            status="blocked",
+                            message="QC blocked: unresolved formula integrity issues",
+                            preflightReport=preflight_report,
+                            qcReport=qc_report,
+                            repairsApplied=repairs_applied,
+                            metadataUpdated=False,
+                        )
+
+                    sheet_names = wb.sheetnames
+                    active_sheet = wb.active.title if wb.active else None
+                    _persist_workbook_atomically(
+                        wb=wb,
+                        file_path=file_path,
+                        load_kwargs=load_kwargs,
+                        file_id=request.fileId,
+                    )
+                    wb = None
+
+                    metadata_updated = _update_excel_file_metadata(
+                        file_id=request.fileId,
+                        filename=file.filename,
+                        sheet_names=sheet_names,
+                        active_sheet=active_sheet,
+                        changes_applied=changes_applied,
+                        qc_report=qc_report,
+                        operation="update",
+                        repairs_applied=repairs_applied,
+                    )
+                    if not metadata_updated:
+                        log.warning(
+                            "Excel metadata update failed for file %s after update",
+                            request.fileId,
+                        )
+                finally:
+                    if wb is not None:
+                        with suppress(Exception):
+                            wb.close()
         except ValueError as e:
             message = str(e)
             if message.startswith("Sheet '"):
@@ -488,30 +656,13 @@ async def update_excel_file(
                 detail=f"Failed to save changes: {str(e)}",
             )
 
-        # Run post-save QC by reloading workbook and checking formula integrity.
-        try:
-            qc_wb = openpyxl.load_workbook(file_path, **_get_workbook_load_kwargs(file.filename))
-            qc_issues = _run_formula_qc_and_repairs(qc_wb)
-            qc_report = _build_qc_report(qc_issues, operation="save")
-            qc_wb.close()
-        except Exception as qc_error:
-            log.warning(f"QC scan failed for file {request.fileId}: {qc_error}")
-            qc_report = ExcelQcReport(
-                blocked=False,
-                blockReason="QC scan unavailable",
-                criticalUnresolved=0,
-                issues=[],
-                recommendedActions=[],
-            )
-
         return ExcelUpdateResponse(
-            status="blocked" if qc_report.blocked else "ok",
-            message=(
-                "QC blocked: unresolved formula integrity issues"
-                if qc_report.blocked
-                else f"Successfully updated {changes_applied} cells"
-            ),
+            status="ok",
+            message=f"Successfully updated {changes_applied} cells",
+            preflightReport=preflight_report,
             qcReport=qc_report,
+            repairsApplied=repairs_applied,
+            metadataUpdated=metadata_updated,
         )
 
     except HTTPException:
@@ -554,11 +705,69 @@ async def excel_download_ready(
                 detail="File not found in storage",
             )
 
+        repairs_applied = 0
+        metadata_updated: Optional[bool] = None
+        qc_report: Optional[ExcelQcReport] = None
+        lock = await _get_excel_file_lock(request.fileId)
         try:
-            wb = openpyxl.load_workbook(file_path, **_get_workbook_load_kwargs(file.filename))
-            issues = _run_formula_qc_and_repairs(wb)
-            qc_report = _build_qc_report(issues, operation="download")
-            wb.close()
+            async with lock:
+                wb = None
+                try:
+                    load_kwargs = _get_workbook_load_kwargs(file.filename)
+                    wb = openpyxl.load_workbook(file_path, **load_kwargs)
+                    issues, repairs_applied = _run_formula_qc_and_repairs(wb)
+                    qc_report = _build_qc_report(issues, operation="download")
+
+                    if qc_report.blocked:
+                        metadata_updated = _update_excel_file_metadata(
+                            file_id=request.fileId,
+                            filename=file.filename,
+                            sheet_names=wb.sheetnames,
+                            active_sheet=wb.active.title if wb.active else None,
+                            changes_applied=0,
+                            qc_report=qc_report,
+                            operation="download_ready_blocked",
+                            repairs_applied=repairs_applied,
+                        )
+                        wb.close()
+                        wb = None
+                    elif repairs_applied > 0:
+                        sheet_names = wb.sheetnames
+                        active_sheet = wb.active.title if wb.active else None
+                        _persist_workbook_atomically(
+                            wb=wb,
+                            file_path=file_path,
+                            load_kwargs=load_kwargs,
+                            file_id=request.fileId,
+                        )
+                        wb = None
+                        metadata_updated = _update_excel_file_metadata(
+                            file_id=request.fileId,
+                            filename=file.filename,
+                            sheet_names=sheet_names,
+                            active_sheet=active_sheet,
+                            changes_applied=0,
+                            qc_report=qc_report,
+                            operation="download_ready_repair",
+                            repairs_applied=repairs_applied,
+                        )
+                    else:
+                        metadata_updated = _update_excel_file_metadata(
+                            file_id=request.fileId,
+                            filename=file.filename,
+                            sheet_names=wb.sheetnames,
+                            active_sheet=wb.active.title if wb.active else None,
+                            changes_applied=0,
+                            qc_report=qc_report,
+                            operation="download_ready_check",
+                            repairs_applied=0,
+                        )
+                        wb.close()
+                        wb = None
+                finally:
+                    if wb is not None:
+                        with suppress(Exception):
+                            wb.close()
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -598,6 +807,8 @@ async def excel_download_ready(
                 qcReport=qc_report,
                 selectedLlmModelId=selected_llm_model_id,
                 selectedLlmModelSource=selected_llm_model_source,
+                repairsApplied=repairs_applied,
+                metadataUpdated=metadata_updated,
             )
 
         return ExcelDownloadReadyResponse(
@@ -606,6 +817,8 @@ async def excel_download_ready(
             qcReport=qc_report,
             selectedLlmModelId=selected_llm_model_id,
             selectedLlmModelSource=selected_llm_model_source,
+            repairsApplied=repairs_applied,
+            metadataUpdated=metadata_updated,
         )
 
     except HTTPException:
@@ -718,6 +931,9 @@ class ExcelValidationRequest(BaseModel):
     fileId: str
     sheet: str
     changes: List[CellChange]
+    strictFormulaMode: Optional[bool] = True
+    blockReferencedByFormula: Optional[bool] = True
+    allowFormulaOverwrite: Optional[bool] = False
 
 
 class ExcelValidationResponse(BaseModel):
@@ -773,6 +989,194 @@ def _expand_range(range_str: str) -> List[str]:
         return cells
     except Exception:
         return [range_str]
+
+
+def _normalize_sheet_name(sheet_name: str) -> str:
+    normalized = (sheet_name or "").strip()
+    if normalized.startswith("'") and normalized.endswith("'") and len(normalized) >= 2:
+        normalized = normalized[1:-1].replace("''", "'")
+    return normalized
+
+
+def _split_sheet_and_range(reference: str, default_sheet: str) -> tuple[str, str]:
+    if "!" not in reference:
+        return default_sheet, reference
+
+    sheet_part, range_part = reference.split("!", 1)
+    return _normalize_sheet_name(sheet_part), range_part
+
+
+def _collect_preflight_warnings(
+    wb, sheet_name: str, changes: List[CellChange]
+) -> List[CellWarning]:
+    ws = wb[sheet_name]
+    warnings: List[CellWarning] = []
+    target_sheet_normalized = _normalize_sheet_name(sheet_name).lower()
+
+    changing_cells: dict[str, CellChange] = {}
+    for change in changes:
+        if change.row < 1 or change.col < 1:
+            continue
+        addr = f"{get_column_letter(change.col)}{change.row}"
+        changing_cells[addr] = change
+
+    # Check 1: direct formula overwrites.
+    for addr, change in changing_cells.items():
+        cell = ws.cell(row=change.row, column=change.col)
+        if isinstance(cell.value, str) and cell.value.startswith("="):
+            warnings.append(
+                CellWarning(
+                    cell=CellReference(
+                        sheet=sheet_name,
+                        row=change.row,
+                        col=change.col,
+                        address=addr,
+                    ),
+                    warning_type="contains_formula",
+                    message=f"Cell {addr} contains a formula that will be overwritten",
+                    details={
+                        "current_formula": cell.value,
+                        "overwrite_allowed": bool(change.forceOverwriteFormula),
+                    },
+                )
+            )
+
+    # Check 2: references from formulas in any worksheet.
+    referenced_by: dict[str, List[str]] = {addr: [] for addr in changing_cells}
+    for formula_ws in wb.worksheets:
+        formula_sheet = formula_ws.title
+        formula_sheet_normalized = _normalize_sheet_name(formula_sheet).lower()
+
+        for row in formula_ws.iter_rows():
+            for cell in row:
+                if not (isinstance(cell.value, str) and cell.value.startswith("=")):
+                    continue
+
+                refs = _parse_cell_references_from_formula(cell.value)
+                for ref in refs:
+                    ref_sheet, ref_range = _split_sheet_and_range(ref, formula_sheet)
+                    if _normalize_sheet_name(ref_sheet).lower() != target_sheet_normalized:
+                        continue
+
+                    for expanded_addr in _expand_range(ref_range):
+                        clean_addr = expanded_addr.replace("$", "")
+                        if clean_addr in referenced_by:
+                            source_addr = f"{get_column_letter(cell.column)}{cell.row}"
+                            if formula_sheet_normalized != target_sheet_normalized:
+                                source_addr = f"{formula_sheet}!{source_addr}"
+                            referenced_by[clean_addr].append(source_addr)
+
+    for addr, referencing_cells in referenced_by.items():
+        if not referencing_cells:
+            continue
+
+        change = changing_cells[addr]
+        unique_refs = sorted(set(referencing_cells))
+        warnings.append(
+            CellWarning(
+                cell=CellReference(
+                    sheet=sheet_name,
+                    row=change.row,
+                    col=change.col,
+                    address=addr,
+                ),
+                warning_type="referenced_by_formula",
+                message=f"Cell {addr} is referenced by {len(unique_refs)} formula(s)",
+                details={
+                    "referenced_by": unique_refs[:10],
+                    "total_references": len(unique_refs),
+                },
+            )
+        )
+
+    # Check 3: workbook defined names.
+    try:
+        defined_names = []
+        if hasattr(wb.defined_names, "values"):
+            defined_names = list(wb.defined_names.values())
+        elif hasattr(wb.defined_names, "definedName"):
+            defined_names = list(wb.defined_names.definedName)
+
+        for defined_name in defined_names:
+            with suppress(Exception):
+                for destination_sheet, destination_range in defined_name.destinations:
+                    if (
+                        _normalize_sheet_name(destination_sheet).lower()
+                        != target_sheet_normalized
+                    ):
+                        continue
+
+                    for expanded_addr in _expand_range(destination_range):
+                        clean_addr = expanded_addr.replace("$", "")
+                        if clean_addr not in changing_cells:
+                            continue
+
+                        change = changing_cells[clean_addr]
+                        warnings.append(
+                            CellWarning(
+                                cell=CellReference(
+                                    sheet=sheet_name,
+                                    row=change.row,
+                                    col=change.col,
+                                    address=clean_addr,
+                                ),
+                                warning_type="in_named_range",
+                                message=(
+                                    f"Cell {clean_addr} is part of named range "
+                                    f"'{defined_name.name}'"
+                                ),
+                                details={"named_range": defined_name.name},
+                            )
+                        )
+    except Exception as e:
+        log.warning(f"Could not check named ranges: {e}")
+
+    return warnings
+
+
+def _build_preflight_report(
+    warnings: List[CellWarning],
+    strict_formula_mode: bool = True,
+    block_referenced_by_formula: bool = True,
+    allow_formula_overwrite: bool = False,
+) -> ExcelValidationResponse:
+    blocked_by_formula_overwrite = False
+    blocked_by_formula_reference = False
+
+    for warning in warnings:
+        details = warning.details or {}
+        overwrite_allowed = bool(details.get("overwrite_allowed")) or bool(
+            allow_formula_overwrite
+        )
+
+        if warning.warning_type == "contains_formula":
+            if strict_formula_mode and not overwrite_allowed:
+                blocked_by_formula_overwrite = True
+        elif warning.warning_type == "referenced_by_formula":
+            if block_referenced_by_formula:
+                blocked_by_formula_reference = True
+
+    safe_to_apply = not (blocked_by_formula_overwrite or blocked_by_formula_reference)
+    if safe_to_apply:
+        message = (
+            f"Found {len(warnings)} warning(s)"
+            if warnings
+            else "No warnings - safe to apply"
+        )
+    else:
+        reasons = []
+        if blocked_by_formula_overwrite:
+            reasons.append("attempted overwrite of existing formula cells")
+        if blocked_by_formula_reference:
+            reasons.append("changes impact cells referenced by formulas")
+        message = f"Blocked by preflight: {', '.join(reasons)}"
+
+    return ExcelValidationResponse(
+        status="ok" if safe_to_apply else "blocked",
+        warnings=warnings,
+        safe_to_apply=safe_to_apply,
+        message=message,
+    )
 
 
 @router.post("/validate")
@@ -831,123 +1235,26 @@ async def validate_excel_changes(
 
         # Check if sheet exists
         if request.sheet not in wb.sheetnames:
+            wb.close()
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Sheet '{request.sheet}' not found. Available: {', '.join(wb.sheetnames)}",
             )
 
-        ws = wb[request.sheet]
-        warnings: List[CellWarning] = []
-        
-        # Build set of cells being changed for quick lookup
-        changing_cells = set()
-        for change in request.changes:
-            addr = f"{get_column_letter(change.col)}{change.row}"
-            changing_cells.add(addr)
-
-        # Check 1: Are any of the changing cells formulas?
-        for change in request.changes:
-            cell = ws.cell(row=change.row, column=change.col)
-            addr = f"{get_column_letter(change.col)}{change.row}"
-            
-            if cell.value and isinstance(cell.value, str) and cell.value.startswith('='):
-                warnings.append(CellWarning(
-                    cell=CellReference(
-                        sheet=request.sheet,
-                        row=change.row,
-                        col=change.col,
-                        address=addr
-                    ),
-                    warning_type="contains_formula",
-                    message=f"Cell {addr} contains a formula that will be overwritten",
-                    details={"current_formula": cell.value}
-                ))
-
-        # Check 2: Are any changing cells referenced by formulas elsewhere?
-        # Scan all cells in the sheet for formulas that reference changing cells
-        referenced_by: dict[str, List[str]] = {addr: [] for addr in changing_cells}
-        
-        for row in ws.iter_rows():
-            for cell in row:
-                if cell.value and isinstance(cell.value, str) and cell.value.startswith('='):
-                    formula = cell.value
-                    refs = _parse_cell_references_from_formula(formula)
-                    
-                    for ref in refs:
-                        # Expand ranges and check each cell
-                        expanded = _expand_range(ref)
-                        for expanded_addr in expanded:
-                            # Normalize address (remove $ and sheet refs)
-                            clean_addr = expanded_addr.replace('$', '')
-                            if '!' in clean_addr:
-                                clean_addr = clean_addr.split('!')[-1]
-                            
-                            if clean_addr in changing_cells:
-                                source_addr = f"{get_column_letter(cell.column)}{cell.row}"
-                                referenced_by[clean_addr].append(source_addr)
-
-        for addr, referencing_cells in referenced_by.items():
-            if referencing_cells:
-                # Find the change object for this address
-                for change in request.changes:
-                    if f"{get_column_letter(change.col)}{change.row}" == addr:
-                        warnings.append(CellWarning(
-                            cell=CellReference(
-                                sheet=request.sheet,
-                                row=change.row,
-                                col=change.col,
-                                address=addr
-                            ),
-                            warning_type="referenced_by_formula",
-                            message=f"Cell {addr} is referenced by {len(referencing_cells)} formula(s)",
-                            details={"referenced_by": referencing_cells[:10]}  # Limit to 10
-                        ))
-                        break
-
-        # Check 3: Named ranges (check workbook-level defined names)
         try:
-            for defined_name in wb.defined_names.definedName:
-                if defined_name.value:
-                    # Parse the range
-                    refs = _parse_cell_references_from_formula(defined_name.value)
-                    for ref in refs:
-                        expanded = _expand_range(ref)
-                        for expanded_addr in expanded:
-                            clean_addr = expanded_addr.replace('$', '')
-                            if '!' in clean_addr:
-                                clean_addr = clean_addr.split('!')[-1]
-                            
-                            if clean_addr in changing_cells:
-                                for change in request.changes:
-                                    if f"{get_column_letter(change.col)}{change.row}" == clean_addr:
-                                        warnings.append(CellWarning(
-                                            cell=CellReference(
-                                                sheet=request.sheet,
-                                                row=change.row,
-                                                col=change.col,
-                                                address=clean_addr
-                                            ),
-                                            warning_type="in_named_range",
-                                            message=f"Cell {clean_addr} is part of named range '{defined_name.name}'",
-                                            details={"named_range": defined_name.name}
-                                        ))
-                                        break
-        except Exception as e:
-            log.warning(f"Could not check named ranges: {e}")
-
-        wb.close()
-
-        # Determine if safe to apply
-        has_critical_warnings = any(
-            w.warning_type == "referenced_by_formula" for w in warnings
-        )
-
-        return ExcelValidationResponse(
-            status="ok",
-            warnings=warnings,
-            safe_to_apply=not has_critical_warnings,
-            message=f"Found {len(warnings)} warning(s)" if warnings else "No warnings - safe to apply"
-        )
+            warnings = _collect_preflight_warnings(
+                wb=wb,
+                sheet_name=request.sheet,
+                changes=request.changes,
+            )
+            return _build_preflight_report(
+                warnings=warnings,
+                strict_formula_mode=bool(request.strictFormulaMode),
+                block_referenced_by_formula=bool(request.blockReferencedByFormula),
+                allow_formula_overwrite=bool(request.allowFormulaOverwrite),
+            )
+        finally:
+            wb.close()
 
     except HTTPException:
         raise
