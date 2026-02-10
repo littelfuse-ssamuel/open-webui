@@ -249,6 +249,13 @@ class ExcelUpdateRequest(BaseModel):
     strictFormulaMode: Optional[bool] = True
     blockReferencedByFormula: Optional[bool] = True
     allowFormulaOverwrite: Optional[bool] = False
+    blockOnCriticalQc: Optional[bool] = True
+
+    # Compatibility aliases for snake_case clients.
+    strict_formula_mode: Optional[bool] = None
+    block_referenced_by_formula: Optional[bool] = None
+    allow_formula_overwrite: Optional[bool] = None
+    block_on_critical_qc: Optional[bool] = None
 
 
 class ExcelUpdateResponse(BaseModel):
@@ -259,6 +266,7 @@ class ExcelUpdateResponse(BaseModel):
     qcReport: Optional["ExcelQcReport"] = None
     repairsApplied: Optional[int] = 0
     metadataUpdated: Optional[bool] = None
+    qcBypassUsed: Optional[bool] = False
 
 
 class ExcelQcIssue(BaseModel):
@@ -286,6 +294,10 @@ class ExcelDownloadReadyRequest(BaseModel):
     llmModelId: Optional[str] = None
     valveLlmModelId: Optional[str] = None
     fallbackModelId: Optional[str] = None
+    blockOnCriticalQc: Optional[bool] = True
+
+    # Compatibility alias for snake_case clients.
+    block_on_critical_qc: Optional[bool] = None
 
 
 class ExcelDownloadReadyResponse(BaseModel):
@@ -296,6 +308,7 @@ class ExcelDownloadReadyResponse(BaseModel):
     selectedLlmModelSource: Optional[str] = None
     repairsApplied: Optional[int] = 0
     metadataUpdated: Optional[bool] = None
+    qcBypassUsed: Optional[bool] = False
 
 
 class ExcelMetadataResponse(BaseModel):
@@ -328,6 +341,20 @@ def _build_qc_report(issues: list[ExcelQcIssue], operation: str) -> ExcelQcRepor
             else []
         ),
     )
+
+
+def _resolve_rollout_bool(
+    primary: Optional[bool], alias: Optional[bool], default: bool
+) -> bool:
+    if alias is not None:
+        return bool(alias)
+    if primary is not None:
+        return bool(primary)
+    return default
+
+
+def _should_block_on_qc(qc_report: ExcelQcReport, block_on_critical_qc: bool) -> bool:
+    return bool(block_on_critical_qc and qc_report.blocked)
 
 
 def _excel_content_type(filename: str) -> str:
@@ -545,6 +572,25 @@ async def update_excel_file(
         qc_report: Optional[ExcelQcReport] = None
         repairs_applied = 0
         metadata_updated: Optional[bool] = None
+        qc_bypass_used = False
+        strict_formula_mode = _resolve_rollout_bool(
+            request.strictFormulaMode, request.strict_formula_mode, True
+        )
+        block_referenced_by_formula = _resolve_rollout_bool(
+            request.blockReferencedByFormula,
+            request.block_referenced_by_formula,
+            True,
+        )
+        allow_formula_overwrite = _resolve_rollout_bool(
+            request.allowFormulaOverwrite,
+            request.allow_formula_overwrite,
+            False,
+        )
+        block_on_critical_qc = _resolve_rollout_bool(
+            request.blockOnCriticalQc,
+            request.block_on_critical_qc,
+            True,
+        )
 
         try:
             lock = await _get_excel_file_lock(request.fileId)
@@ -564,11 +610,9 @@ async def update_excel_file(
                     )
                     preflight_report = _build_preflight_report(
                         warnings=preflight_warnings,
-                        strict_formula_mode=bool(request.strictFormulaMode),
-                        block_referenced_by_formula=bool(
-                            request.blockReferencedByFormula
-                        ),
-                        allow_formula_overwrite=bool(request.allowFormulaOverwrite),
+                        strict_formula_mode=strict_formula_mode,
+                        block_referenced_by_formula=block_referenced_by_formula,
+                        allow_formula_overwrite=allow_formula_overwrite,
                     )
 
                     if not preflight_report.safe_to_apply:
@@ -584,7 +628,10 @@ async def update_excel_file(
                     qc_issues, repairs_applied = _run_formula_qc_and_repairs(wb)
                     qc_report = _build_qc_report(qc_issues, operation="save")
 
-                    if qc_report.blocked:
+                    qc_blocked = _should_block_on_qc(
+                        qc_report, block_on_critical_qc=block_on_critical_qc
+                    )
+                    if qc_blocked:
                         return ExcelUpdateResponse(
                             status="blocked",
                             message="QC blocked: unresolved formula integrity issues",
@@ -592,7 +639,9 @@ async def update_excel_file(
                             qcReport=qc_report,
                             repairsApplied=repairs_applied,
                             metadataUpdated=False,
+                            qcBypassUsed=False,
                         )
+                    qc_bypass_used = bool(qc_report.blocked and not qc_blocked)
 
                     sheet_names = wb.sheetnames
                     active_sheet = wb.active.title if wb.active else None
@@ -611,7 +660,7 @@ async def update_excel_file(
                         active_sheet=active_sheet,
                         changes_applied=changes_applied,
                         qc_report=qc_report,
-                        operation="update",
+                        operation=("update_qc_bypass" if qc_bypass_used else "update"),
                         repairs_applied=repairs_applied,
                     )
                     if not metadata_updated:
@@ -658,11 +707,17 @@ async def update_excel_file(
 
         return ExcelUpdateResponse(
             status="ok",
-            message=f"Successfully updated {changes_applied} cells",
+            message=(
+                "Successfully updated "
+                f"{changes_applied} cells (QC bypass enabled; critical QC issues remain)."
+                if qc_bypass_used
+                else f"Successfully updated {changes_applied} cells"
+            ),
             preflightReport=preflight_report,
             qcReport=qc_report,
             repairsApplied=repairs_applied,
             metadataUpdated=metadata_updated,
+            qcBypassUsed=qc_bypass_used,
         )
 
     except HTTPException:
@@ -708,6 +763,12 @@ async def excel_download_ready(
         repairs_applied = 0
         metadata_updated: Optional[bool] = None
         qc_report: Optional[ExcelQcReport] = None
+        qc_bypass_used = False
+        block_on_critical_qc = _resolve_rollout_bool(
+            request.blockOnCriticalQc,
+            request.block_on_critical_qc,
+            True,
+        )
         lock = await _get_excel_file_lock(request.fileId)
         try:
             async with lock:
@@ -717,8 +778,11 @@ async def excel_download_ready(
                     wb = openpyxl.load_workbook(file_path, **load_kwargs)
                     issues, repairs_applied = _run_formula_qc_and_repairs(wb)
                     qc_report = _build_qc_report(issues, operation="download")
+                    qc_blocked = _should_block_on_qc(
+                        qc_report, block_on_critical_qc=block_on_critical_qc
+                    )
 
-                    if qc_report.blocked:
+                    if qc_blocked:
                         metadata_updated = _update_excel_file_metadata(
                             file_id=request.fileId,
                             filename=file.filename,
@@ -732,6 +796,7 @@ async def excel_download_ready(
                         wb.close()
                         wb = None
                     elif repairs_applied > 0:
+                        qc_bypass_used = bool(qc_report.blocked)
                         sheet_names = wb.sheetnames
                         active_sheet = wb.active.title if wb.active else None
                         _persist_workbook_atomically(
@@ -748,10 +813,15 @@ async def excel_download_ready(
                             active_sheet=active_sheet,
                             changes_applied=0,
                             qc_report=qc_report,
-                            operation="download_ready_repair",
+                            operation=(
+                                "download_ready_qc_bypass_repair"
+                                if qc_bypass_used
+                                else "download_ready_repair"
+                            ),
                             repairs_applied=repairs_applied,
                         )
                     else:
+                        qc_bypass_used = bool(qc_report.blocked)
                         metadata_updated = _update_excel_file_metadata(
                             file_id=request.fileId,
                             filename=file.filename,
@@ -759,7 +829,11 @@ async def excel_download_ready(
                             active_sheet=wb.active.title if wb.active else None,
                             changes_applied=0,
                             qc_report=qc_report,
-                            operation="download_ready_check",
+                            operation=(
+                                "download_ready_qc_bypass_check"
+                                if qc_bypass_used
+                                else "download_ready_check"
+                            ),
                             repairs_applied=0,
                         )
                         wb.close()
@@ -794,7 +868,10 @@ async def excel_download_ready(
                 fallback_model_id=request.fallbackModelId,
             )
 
-        if qc_report.blocked:
+        qc_blocked = _should_block_on_qc(
+            qc_report, block_on_critical_qc=block_on_critical_qc
+        )
+        if qc_blocked:
             log.info(
                 "excel_qc_blocked fileId=%s operation=download blocked=true critical=%s selected_model=%s source=%s",
                 request.fileId,
@@ -809,6 +886,7 @@ async def excel_download_ready(
                 selectedLlmModelSource=selected_llm_model_source,
                 repairsApplied=repairs_applied,
                 metadataUpdated=metadata_updated,
+                qcBypassUsed=False,
             )
 
         return ExcelDownloadReadyResponse(
@@ -819,6 +897,7 @@ async def excel_download_ready(
             selectedLlmModelSource=selected_llm_model_source,
             repairsApplied=repairs_applied,
             metadataUpdated=metadata_updated,
+            qcBypassUsed=qc_bypass_used,
         )
 
     except HTTPException:
@@ -934,6 +1013,11 @@ class ExcelValidationRequest(BaseModel):
     strictFormulaMode: Optional[bool] = True
     blockReferencedByFormula: Optional[bool] = True
     allowFormulaOverwrite: Optional[bool] = False
+
+    # Compatibility aliases for snake_case clients.
+    strict_formula_mode: Optional[bool] = None
+    block_referenced_by_formula: Optional[bool] = None
+    allow_formula_overwrite: Optional[bool] = None
 
 
 class ExcelValidationResponse(BaseModel):
@@ -1242,6 +1326,19 @@ async def validate_excel_changes(
             )
 
         try:
+            strict_formula_mode = _resolve_rollout_bool(
+                request.strictFormulaMode, request.strict_formula_mode, True
+            )
+            block_referenced_by_formula = _resolve_rollout_bool(
+                request.blockReferencedByFormula,
+                request.block_referenced_by_formula,
+                True,
+            )
+            allow_formula_overwrite = _resolve_rollout_bool(
+                request.allowFormulaOverwrite,
+                request.allow_formula_overwrite,
+                False,
+            )
             warnings = _collect_preflight_warnings(
                 wb=wb,
                 sheet_name=request.sheet,
@@ -1249,9 +1346,9 @@ async def validate_excel_changes(
             )
             return _build_preflight_report(
                 warnings=warnings,
-                strict_formula_mode=bool(request.strictFormulaMode),
-                block_referenced_by_formula=bool(request.blockReferencedByFormula),
-                allow_formula_overwrite=bool(request.allowFormulaOverwrite),
+                strict_formula_mode=strict_formula_mode,
+                block_referenced_by_formula=block_referenced_by_formula,
+                allow_formula_overwrite=allow_formula_overwrite,
             )
         finally:
             wb.close()

@@ -392,3 +392,56 @@ def test_build_excel_metadata_update_uses_extension_content_type():
         meta_xlsx["content_type"]
         == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
+
+def test_resolve_rollout_bool_prefers_alias_then_primary_then_default():
+    assert excel_router._resolve_rollout_bool(True, False, True) is False
+    assert excel_router._resolve_rollout_bool(False, None, True) is False
+    assert excel_router._resolve_rollout_bool(None, None, True) is True
+
+
+def test_should_block_on_qc_respects_rollout_flag():
+    qc_report = excel_router._build_qc_report(
+        [
+            excel_router.ExcelQcIssue(
+                sheet="Sheet1",
+                cell="A1",
+                severity="critical",
+                issueType="invalid_reference_token",
+                message="bad",
+            )
+        ],
+        operation="download",
+    )
+
+    assert excel_router._should_block_on_qc(qc_report, block_on_critical_qc=True) is True
+    assert excel_router._should_block_on_qc(qc_report, block_on_critical_qc=False) is False
+
+
+def test_update_request_supports_snake_case_rollout_aliases():
+    req = excel_router.ExcelUpdateRequest(
+        fileId="file-1",
+        sheet="Sheet1",
+        changes=[],
+        strictFormulaMode=True,
+        strict_formula_mode=False,
+        blockReferencedByFormula=True,
+        block_referenced_by_formula=False,
+        allowFormulaOverwrite=False,
+        allow_formula_overwrite=True,
+        blockOnCriticalQc=True,
+        block_on_critical_qc=False,
+    )
+
+    assert excel_router._resolve_rollout_bool(
+        req.strictFormulaMode, req.strict_formula_mode, True
+    ) is False
+    assert excel_router._resolve_rollout_bool(
+        req.blockReferencedByFormula, req.block_referenced_by_formula, True
+    ) is False
+    assert excel_router._resolve_rollout_bool(
+        req.allowFormulaOverwrite, req.allow_formula_overwrite, False
+    ) is True
+    assert excel_router._resolve_rollout_bool(
+        req.blockOnCriticalQc, req.block_on_critical_qc, True
+    ) is False
