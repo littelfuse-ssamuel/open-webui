@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy, createEventDispatcher, tick } from 'svelte';
 	import { toast } from 'svelte-sonner';
-	import type { ExcelArtifact, ExcelCellChange } from '$lib/types/excel';
+	import type { ExcelArtifact, ExcelCellChange, ExcelQcReport } from '$lib/types/excel';
 	import { isValidExcelArtifact, EXCEL_MIME_TYPE } from '$lib/types/excel';
 	import { excelCore } from '$lib/services/excel-core';
 
@@ -24,6 +24,8 @@
 	let dirtyChanges: Map<string, ExcelCellChange> = new Map();
 	let isFullscreen = false;
 	let hasCharts = false;
+	let qcBlockedMessage = '';
+	let qcReport: ExcelQcReport | null = null;
 	// Univer instances (dynamically loaded)
 	let univer: any = null;
 	let univerAPI: any = null;
@@ -497,6 +499,8 @@
 			if (editCommands.some((cmd) => command.id?.includes(cmd) || command.id?.includes('set'))) {
 				hasUnsavedChanges = true;
 				saveMessage = '';
+				qcBlockedMessage = '';
+				qcReport = null;
 
 				// For set-range-values commands, extract the actual changed cells
 				if (command.id?.includes('set-range-values') && command.params) {
@@ -606,6 +610,8 @@
 		try {
 			saving = true;
 			saveMessage = '';
+			qcBlockedMessage = '';
+			qcReport = null;
 
 			// Get current workbook data from Univer for sheet name resolution
 			const workbook = univerAPI.getActiveWorkbook();
@@ -654,11 +660,19 @@
 			for (const [subUnitId, { sheetName, changes }] of changesBySheet) {
 				if (changes.length > 0) {
 					try {
-						await excelCore.saveChanges({
+						const saveResponse = await excelCore.saveChanges({
 							fileId: file.fileId!,
 							sheet: sheetName,
 							changes
 						});
+
+						if (saveResponse.status === 'blocked' && saveResponse.qcReport) {
+							qcReport = saveResponse.qcReport;
+							qcBlockedMessage = `Save blocked by QC: ${saveResponse.qcReport.blockReason}`;
+							dispatch('excelQcBlocked', saveResponse.qcReport);
+							throw new Error(qcBlockedMessage);
+						}
+
 						totalChangesApplied += changes.length;
 						console.log(`Saved ${changes.length} changed cells to sheet "${sheetName}"`);
 					} catch (e) {
@@ -693,7 +707,7 @@
 
 	// Download the current workbook
 	async function downloadExcel() {
-		if (!file?.url) {
+		if (!file?.url || !file?.fileId) {
 			toast.error('No workbook loaded');
 			return;
 		}
@@ -704,12 +718,22 @@
 		}
 
 		try {
-			const arrayBuffer = await excelCore.fetchExcelFile(file.url);
+			const gate = await excelCore.checkDownloadReady({ fileId: file.fileId, strictMode: true });
+			if (gate.status === 'blocked' && gate.qcReport) {
+				qcReport = gate.qcReport;
+				qcBlockedMessage = `Download blocked by QC: ${gate.qcReport.blockReason}`;
+				dispatch('excelQcBlocked', gate.qcReport);
+				toast.error(`${gate.qcReport.blockReason}. Fix listed formulas before download.`);
+				return;
+			}
+
+			const downloadUrl = gate.downloadUrl || file.url;
+			const arrayBuffer = await excelCore.fetchExcelFile(downloadUrl);
 			const blob = new Blob([arrayBuffer], { type: EXCEL_MIME_TYPE });
 			await excelCore.downloadExcel(blob, file.name || 'download.xlsx');
 		} catch (e) {
 			console.error('Error downloading Excel file:', e);
-			toast.error('Failed to download file');
+			toast.error('Failed to run download readiness check');
 		}
 	}
 
@@ -934,6 +958,16 @@
 		{#if saveMessage}
 			<div class="excel-message" class:excel-message-success={!saveMessage.includes('Failed')}>
 				{saveMessage}
+			</div>
+		{/if}
+
+		{#if qcBlockedMessage && qcReport}
+			<div class="excel-message">
+				<strong>{qcBlockedMessage}</strong>
+				<div>Critical unresolved: {qcReport.criticalUnresolved}</div>
+				{#if qcReport.issues?.length}
+					<div>Impacted cells: {qcReport.issues.slice(0, 5).map((i) => `${i.sheet}!${i.cell}`).join(', ')}</div>
+				{/if}
 			</div>
 		{/if}
 

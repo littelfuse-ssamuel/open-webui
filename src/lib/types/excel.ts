@@ -72,11 +72,35 @@ export interface ExcelCellChange {
 	isFormula: boolean;
 }
 
+export interface ExcelQcIssue {
+	sheet: string;
+	cell: string;
+	severity: 'critical' | 'warning';
+	issueType: string;
+	message: string;
+	originalFormula?: string;
+	repairedFormula?: string;
+}
+
+export interface ExcelQcReport {
+	blocked: boolean;
+	blockReason: string;
+	criticalUnresolved: number;
+	issues: ExcelQcIssue[];
+	recommendedActions: string[];
+}
+
 /** Excel update response */
 export interface ExcelUpdateResponse {
-	success: boolean;
+	status: 'ok' | 'blocked' | 'error';
 	message?: string;
-	changesApplied?: number;
+	qcReport?: ExcelQcReport;
+}
+
+export interface ExcelDownloadGateResponse {
+	status: 'ok' | 'blocked' | 'error';
+	downloadUrl?: string;
+	qcReport?: ExcelQcReport;
 }
 
 /** Supported Excel file extensions */
