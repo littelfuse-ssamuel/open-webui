@@ -101,6 +101,8 @@ export interface ExcelDownloadGateResponse {
 	status: 'ok' | 'blocked' | 'error';
 	downloadUrl?: string;
 	qcReport?: ExcelQcReport;
+	selectedLlmModelId?: string;
+	selectedLlmModelSource?: 'request' | 'valve' | 'fallback';
 }
 
 /** Supported Excel file extensions */

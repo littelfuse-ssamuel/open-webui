@@ -186,3 +186,52 @@ def test_build_qc_report_blocks_on_critical():
     assert report.blocked is True
     assert report.criticalUnresolved == 1
     assert report.blockReason
+
+
+def test_resolve_llm_qc_model_id_prefers_request_over_valve_and_fallback():
+    configured_models = {
+        "request-model": {},
+        "valve-model": {},
+        "fallback-model": {},
+    }
+
+    model_id, source = excel_router._resolve_llm_qc_model_id(
+        configured_models=configured_models,
+        requested_model_id="request-model",
+        valve_model_id="valve-model",
+        fallback_model_id="fallback-model",
+    )
+
+    assert model_id == "request-model"
+    assert source == "request"
+
+
+def test_resolve_llm_qc_model_id_uses_valve_when_request_is_invalid():
+    configured_models = {
+        "valve-model": {},
+        "fallback-model": {},
+    }
+
+    model_id, source = excel_router._resolve_llm_qc_model_id(
+        configured_models=configured_models,
+        requested_model_id="missing-request-model",
+        valve_model_id="valve-model",
+        fallback_model_id="fallback-model",
+    )
+
+    assert model_id == "valve-model"
+    assert source == "valve"
+
+
+def test_resolve_llm_qc_model_id_returns_none_when_no_candidates_are_configured():
+    configured_models = {"configured": {}}
+
+    model_id, source = excel_router._resolve_llm_qc_model_id(
+        configured_models=configured_models,
+        requested_model_id="missing-request-model",
+        valve_model_id="missing-valve-model",
+        fallback_model_id="missing-fallback-model",
+    )
+
+    assert model_id is None
+    assert source is None

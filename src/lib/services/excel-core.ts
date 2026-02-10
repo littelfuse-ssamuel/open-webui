@@ -98,6 +98,9 @@ class ExcelCoreService {
 		fileId: string;
 		strictMode?: boolean;
 		allowLlmRepair?: boolean;
+		llmModelId?: string;
+		valveLlmModelId?: string;
+		fallbackModelId?: string;
 	}): Promise<ExcelDownloadGateResponse> {
 		const response = await fetch('/api/v1/excel/download-ready', {
 			method: 'POST',

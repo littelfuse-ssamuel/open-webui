@@ -275,12 +275,17 @@ class ExcelDownloadReadyRequest(BaseModel):
     fileId: str
     strictMode: Optional[bool] = True
     allowLlmRepair: Optional[bool] = False
+    llmModelId: Optional[str] = None
+    valveLlmModelId: Optional[str] = None
+    fallbackModelId: Optional[str] = None
 
 
 class ExcelDownloadReadyResponse(BaseModel):
     status: str
     downloadUrl: Optional[str] = None
     qcReport: Optional[ExcelQcReport] = None
+    selectedLlmModelId: Optional[str] = None
+    selectedLlmModelSource: Optional[str] = None
 
 
 class ExcelMetadataResponse(BaseModel):
@@ -376,6 +381,25 @@ def _run_formula_qc_and_repairs(wb) -> list[ExcelQcIssue]:
                     )
 
     return issues
+
+
+def _resolve_llm_qc_model_id(
+    configured_models: dict[str, Any],
+    requested_model_id: Optional[str] = None,
+    valve_model_id: Optional[str] = None,
+    fallback_model_id: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    candidates = [
+        ("request", requested_model_id),
+        ("valve", valve_model_id),
+        ("fallback", fallback_model_id),
+    ]
+
+    for source, model_id in candidates:
+        if model_id and model_id in configured_models:
+            return model_id, source
+
+    return None, None
 
 
 @router.post("/update")
@@ -541,16 +565,47 @@ async def excel_download_ready(
                 detail=f"Invalid Excel file: {str(e)}",
             )
 
+        selected_llm_model_id = None
+        selected_llm_model_source = None
+        if request.allowLlmRepair:
+            configured_models = request.app.state.MODELS or {}
+            if not configured_models:
+                try:
+                    from open_webui.main import get_all_models
+
+                    await get_all_models(request, user=user)
+                    configured_models = request.app.state.MODELS or {}
+                except Exception:
+                    configured_models = request.app.state.MODELS or {}
+
+            selected_llm_model_id, selected_llm_model_source = _resolve_llm_qc_model_id(
+                configured_models=configured_models,
+                requested_model_id=request.llmModelId,
+                valve_model_id=request.valveLlmModelId,
+                fallback_model_id=request.fallbackModelId,
+            )
+
         if qc_report.blocked:
             log.info(
-                f"excel_qc_blocked fileId={request.fileId} operation=download blocked=true critical={qc_report.criticalUnresolved}"
+                "excel_qc_blocked fileId=%s operation=download blocked=true critical=%s selected_model=%s source=%s",
+                request.fileId,
+                qc_report.criticalUnresolved,
+                selected_llm_model_id,
+                selected_llm_model_source,
             )
-            return ExcelDownloadReadyResponse(status="blocked", qcReport=qc_report)
+            return ExcelDownloadReadyResponse(
+                status="blocked",
+                qcReport=qc_report,
+                selectedLlmModelId=selected_llm_model_id,
+                selectedLlmModelSource=selected_llm_model_source,
+            )
 
         return ExcelDownloadReadyResponse(
             status="ok",
             downloadUrl=f"/api/v1/files/{request.fileId}/content",
             qcReport=qc_report,
+            selectedLlmModelId=selected_llm_model_id,
+            selectedLlmModelSource=selected_llm_model_source,
         )
 
     except HTTPException:
