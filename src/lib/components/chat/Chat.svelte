@@ -56,6 +56,11 @@
 		getCodeBlockContents,
 		isYoutubeUrl
 	} from '$lib/utils';
+	import {
+		buildToolContextFiles,
+		getFileIdentity,
+		normalizeExcelFileReference
+	} from '$lib/utils/excel-files';
 	import { AudioQueue } from '$lib/utils/audio';
 
 	import {
@@ -407,10 +412,13 @@
 						getContents();
 					}
 				} else if (type === 'chat:message:files' || type === 'files') {
-					message.files = data.files;
+					const normalizedFiles = Array.isArray(data.files)
+						? data.files.map((file) => normalizeExcelFileReference(file))
+						: data.files;
+					message.files = normalizedFiles;
 
 					// Auto-open artifact panel for Excel files (like HTML artifacts)
-					if (data.files?.some((f) => f.type === 'excel') && !$mobile) {
+					if (normalizedFiles?.some((f) => f.type === 'excel') && !$mobile) {
 						showArtifacts.set(true);
 						showControls.set(true);
 						// Refresh artifact contents to include the new Excel file
@@ -876,8 +884,12 @@
 			for (const message of messages) {
 				if (message.files?.some((f) => f.type === 'excel')) {
 					const excelFile = message.files.find((f) => f.type === 'excel');
+					const excelFileId = excelFile?.fileId ?? excelFile?.id;
+					if (!excelFileId) {
+						continue;
+					}
 					return $artifactContents.find(
-						(content) => content.type === 'excel' && content.fileId === excelFile.fileId
+						(content) => content.type === 'excel' && content.fileId === excelFileId
 					);
 				}
 			}
@@ -975,14 +987,15 @@
 			if (message?.files) {
 				for (const file of message.files) {
 					if (file.type === 'excel') {
+						const normalizedFile = normalizeExcelFileReference(file);
 						contents = [
 							...contents,
 							{
 								type: 'excel',
-								url: file.url,
-								name: file.name,
-								fileId: file.fileId,
-								meta: file.meta
+								url: normalizedFile.url,
+								name: normalizedFile.name,
+								fileId: normalizedFile.fileId ?? normalizedFile.id,
+								meta: normalizedFile.meta
 							}
 						];
 					}
@@ -1225,7 +1238,9 @@
 				chatTitle.set(chatContent.title);
 
 				params = chatContent?.params ?? {};
-				chatFiles = chatContent?.files ?? [];
+				chatFiles = (chatContent?.files ?? []).map((file) =>
+					normalizeExcelFileReference(file)
+				);
 
 				autoScroll = true;
 				await tick();
@@ -1952,27 +1967,20 @@
 
 		const chatMessageFiles = _messages
 			.filter((message) => message.files)
-			.flatMap((message) => message.files);
+			.flatMap((message) => message.files)
+			.map((file) => normalizeExcelFileReference(file));
 
 		// Filter chatFiles to only include files that are in the chatMessageFiles
-		chatFiles = chatFiles.filter((item) => {
-			const fileExists = chatMessageFiles.some((messageFile) => messageFile.id === item.id);
-			return fileExists;
-		});
+		chatFiles = chatFiles
+			.map((item) => normalizeExcelFileReference(item))
+			.filter((item) => {
+				const itemId = getFileIdentity(item);
+				return itemId
+					? chatMessageFiles.some((messageFile) => getFileIdentity(messageFile) === itemId)
+					: false;
+			});
 
-		let files = JSON.parse(JSON.stringify(chatFiles));
-		files.push(
-			...(userMessage?.files ?? []).filter(
-				(item) =>
-					['doc', 'text', 'note', 'chat', 'collection'].includes(item.type) ||
-					(item.type === 'file' && !(item?.content_type ?? '').startsWith('image/'))
-			)
-		);
-		// Remove duplicates
-		files = files.filter(
-			(item, index, array) =>
-				array.findIndex((i) => JSON.stringify(i) === JSON.stringify(item)) === index
-		);
+		let files = buildToolContextFiles(chatFiles, _messages, userMessage?.files ?? []);
 
 		scrollToBottom();
 		eventTarget.dispatchEvent(

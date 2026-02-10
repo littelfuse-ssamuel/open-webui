@@ -693,62 +693,19 @@
 
 	// Download the current workbook
 	async function downloadExcel() {
-		if (!univerAPI) {
+		if (!file?.url) {
 			toast.error('No workbook loaded');
 			return;
 		}
 
+		if (hasUnsavedChanges) {
+			toast.warning('Save changes before downloading to preserve formatting');
+			return;
+		}
+
 		try {
-			const workbook = univerAPI.getActiveWorkbook();
-			if (!workbook) {
-				throw new Error('No active workbook');
-			}
-
-			const snapshot = workbook.save();
-
-			// Convert Univer snapshot back to xlsx format
-			const XLSX = await import('xlsx');
-			const wb = XLSX.utils.book_new();
-
-			// Process each sheet
-			Object.values(snapshot.sheets || {}).forEach((sheetData: any) => {
-				const wsData: any[][] = [];
-				const cellData = sheetData.cellData || {};
-
-				// Find max row and column
-				let maxRow = 0;
-				let maxCol = 0;
-				Object.entries(cellData).forEach(([rowStr, rowData]: [string, any]) => {
-					maxRow = Math.max(maxRow, parseInt(rowStr));
-					Object.keys(rowData).forEach((colStr) => {
-						maxCol = Math.max(maxCol, parseInt(colStr));
-					});
-				});
-
-				// Build 2D array
-				for (let r = 0; r <= maxRow; r++) {
-					wsData[r] = [];
-					for (let c = 0; c <= maxCol; c++) {
-						const cell = cellData[r]?.[c];
-						if (cell) {
-							wsData[r][c] = cell.f ? { f: cell.f, v: cell.v } : cell.v;
-						} else {
-							wsData[r][c] = '';
-						}
-					}
-				}
-
-				const ws = XLSX.utils.aoa_to_sheet(wsData);
-				XLSX.utils.book_append_sheet(wb, ws, sheetData.name || 'Sheet1');
-			});
-
-			// Generate and download
-			const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-			const blob = new Blob([wbout], {
-				type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-			});
-
-			// Use excelCore service for consistent download
+			const arrayBuffer = await excelCore.fetchExcelFile(file.url);
+			const blob = new Blob([arrayBuffer], { type: EXCEL_MIME_TYPE });
 			await excelCore.downloadExcel(blob, file.name || 'download.xlsx');
 		} catch (e) {
 			console.error('Error downloading Excel file:', e);

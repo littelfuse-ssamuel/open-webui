@@ -2,22 +2,232 @@
 Excel file editing API endpoints
 """
 
+import asyncio
 import logging
+import os
+import shutil
+import tempfile
+import zipfile
+from contextlib import suppress
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 import openpyxl
 from openpyxl.utils import get_column_letter
 
 from open_webui.constants import ERROR_MESSAGES
-from open_webui.models.files import Files, FileModel
+from open_webui.models.files import Files
 from open_webui.storage.provider import Storage
 from open_webui.utils.auth import get_verified_user
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_EXCEL_FILE_LOCKS: dict[str, asyncio.Lock] = {}
+_EXCEL_FILE_LOCKS_GUARD = asyncio.Lock()
+
+
+async def _get_excel_file_lock(file_id: str) -> asyncio.Lock:
+    async with _EXCEL_FILE_LOCKS_GUARD:
+        lock = _EXCEL_FILE_LOCKS.get(file_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _EXCEL_FILE_LOCKS[file_id] = lock
+        return lock
+
+
+def _get_workbook_load_kwargs(filename: str) -> dict[str, Any]:
+    suffix = Path(filename).suffix.lower()
+    return {
+        "keep_vba": suffix == ".xlsm",
+        "data_only": False,
+        "keep_links": True,
+    }
+
+
+def _remove_calc_chain_if_present(file_path: Path):
+    if not zipfile.is_zipfile(file_path):
+        return
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f"{file_path.stem}_calc_", suffix=file_path.suffix, dir=file_path.parent
+    )
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+
+    should_replace = False
+    try:
+        with zipfile.ZipFile(file_path, "r") as zin:
+            members = zin.namelist()
+            if "xl/calcChain.xml" not in members:
+                return
+
+            with zipfile.ZipFile(tmp_path, "w") as zout:
+                for item in zin.infolist():
+                    if item.filename != "xl/calcChain.xml":
+                        zout.writestr(item, zin.read(item.filename))
+            should_replace = True
+
+        if should_replace:
+            os.replace(tmp_path, file_path)
+    finally:
+        with suppress(Exception):
+            if tmp_path.exists():
+                tmp_path.unlink()
+
+
+def _coerce_cell_value(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+
+    stripped = value.strip()
+    if stripped == "":
+        return value
+
+    try:
+        if "." in stripped:
+            return float(stripped)
+        return int(stripped)
+    except ValueError:
+        return value
+
+
+def _apply_worksheet_changes(ws, changes: List["CellChange"]) -> int:
+    changes_applied = 0
+
+    for change in changes:
+        try:
+            if change.row < 1 or change.col < 1:
+                log.warning(
+                    f"Invalid cell coordinates: row={change.row}, col={change.col}"
+                )
+                continue
+
+            if change.value is None:
+                log.debug(
+                    f"Skipping cell at row={change.row}, col={change.col} - value is None"
+                )
+                continue
+
+            cell = ws.cell(row=change.row, column=change.col)
+
+            if (
+                change.isFormula
+                and isinstance(change.value, str)
+                and change.value.startswith("=")
+            ):
+                cell.value = change.value
+                log.debug(
+                    f"Updated cell {get_column_letter(change.col)}{change.row} with formula: {change.value}"
+                )
+            else:
+                value = _coerce_cell_value(change.value)
+                cell.value = value
+                log.debug(
+                    f"Updated cell {get_column_letter(change.col)}{change.row} = {value}"
+                )
+
+            changes_applied += 1
+
+        except Exception as e:
+            log.error(f"Error updating cell at row={change.row}, col={change.col}: {e}")
+            continue
+
+    return changes_applied
+
+
+def _persist_workbook_atomically(
+    wb, file_path: Path, load_kwargs: dict[str, Any], file_id: str
+):
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f"{file_path.stem}_update_", suffix=file_path.suffix, dir=file_path.parent
+    )
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    backup_path = file_path.with_suffix(f"{file_path.suffix}.bak")
+
+    try:
+        try:
+            try:
+                wb.properties.calcId = None
+            except Exception:
+                pass
+            wb.save(tmp_path)
+        finally:
+            with suppress(Exception):
+                wb.close()
+
+        _remove_calc_chain_if_present(tmp_path)
+
+        verify_wb = openpyxl.load_workbook(tmp_path, **load_kwargs)
+        verify_wb.close()
+
+        shutil.copy2(file_path, backup_path)
+        try:
+            os.replace(tmp_path, file_path)
+        except Exception:
+            with suppress(Exception):
+                shutil.copy2(backup_path, file_path)
+            raise
+
+        log.info(f"Successfully wrote updated workbook for file {file_id}")
+    finally:
+        with suppress(Exception):
+            if tmp_path.exists():
+                tmp_path.unlink()
+        with suppress(Exception):
+            if backup_path.exists():
+                backup_path.unlink()
+
+
+def _apply_excel_changes_on_disk(
+    file_path: Path,
+    filename: str,
+    sheet_name: str,
+    changes: List["CellChange"],
+    file_id: str,
+) -> int:
+    load_kwargs = _get_workbook_load_kwargs(filename)
+    wb = None
+    try:
+        wb = openpyxl.load_workbook(file_path, **load_kwargs)
+    except Exception as e:
+        log.error(f"Error loading workbook {file_id}: {e}")
+        raise ValueError(f"Invalid Excel file: {str(e)}")
+
+    try:
+        if sheet_name not in wb.sheetnames:
+            raise ValueError(f"Sheet '{sheet_name}' not found in workbook.")
+
+        ws = wb[sheet_name]
+        changes_applied = _apply_worksheet_changes(ws, changes)
+        _persist_workbook_atomically(wb, file_path, load_kwargs, file_id)
+        wb = None
+        return changes_applied
+    finally:
+        if wb is not None:
+            with suppress(Exception):
+                wb.close()
+
+
+async def _apply_excel_changes_with_lock(
+    file_id: str,
+    file_path: Path,
+    filename: str,
+    sheet_name: str,
+    changes: List["CellChange"],
+) -> int:
+    lock = await _get_excel_file_lock(file_id)
+    async with lock:
+        return _apply_excel_changes_on_disk(
+            file_path=file_path,
+            filename=filename,
+            sheet_name=sheet_name,
+            changes=changes,
+            file_id=file_id,
+        )
 
 
 class CellChange(BaseModel):
@@ -93,74 +303,40 @@ async def update_excel_file(
                 detail="File not found in storage",
             )
 
-        # Load the workbook
         try:
-            wb = openpyxl.load_workbook(file_path, keep_vba=True)
-        except Exception as e:
-            log.error(f"Error loading workbook {request.fileId}: {e}")
+            changes_applied = await _apply_excel_changes_with_lock(
+                file_id=request.fileId,
+                file_path=file_path,
+                filename=file.filename,
+                sheet_name=request.sheet,
+                changes=request.changes,
+            )
+        except ValueError as e:
+            message = str(e)
+            if message.startswith("Sheet '"):
+                available_sheets: list[str] = []
+                try:
+                    wb_meta = openpyxl.load_workbook(
+                        file_path, read_only=True, data_only=True, keep_links=True
+                    )
+                    available_sheets = wb_meta.sheetnames
+                    wb_meta.close()
+                except Exception:
+                    available_sheets = []
+
+                detail = (
+                    f"{message} Available sheets: {', '.join(available_sheets)}"
+                    if available_sheets
+                    else message
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=detail,
+                )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid Excel file: {str(e)}",
+                detail=message,
             )
-
-        # Check if sheet exists
-        if request.sheet not in wb.sheetnames:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Sheet '{request.sheet}' not found in workbook. Available sheets: {', '.join(wb.sheetnames)}",
-            )
-
-        # Get the worksheet
-        ws = wb[request.sheet]
-
-        # Apply changes
-        changes_applied = 0
-        for change in request.changes:
-            try:
-                # Validate row and column are positive
-                if change.row < 1 or change.col < 1:
-                    log.warning(f"Invalid cell coordinates: row={change.row}, col={change.col}")
-                    continue
-
-                # Skip if value is None - don't overwrite existing data with null
-                if change.value is None:
-                    log.debug(f"Skipping cell at row={change.row}, col={change.col} - value is None")
-                    continue
-
-                # Get the cell and set its value
-                cell = ws.cell(row=change.row, column=change.col)
-
-                # Handle formulas vs regular values
-                if change.isFormula and isinstance(change.value, str) and change.value.startswith('='):
-                    # Set as formula - openpyxl will evaluate it
-                    cell.value = change.value
-                    log.debug(f"Updated cell {get_column_letter(change.col)}{change.row} with formula: {change.value}")
-                else:
-                    # Set as regular value
-                    # Try to convert numeric strings to numbers for proper Excel formatting
-                    value = change.value
-                    if isinstance(value, str):
-                        try:
-                            if '.' in value:
-                                value = float(value)
-                            else:
-                                value = int(value)
-                        except ValueError:
-                            pass  # Keep as string
-                    cell.value = value
-                    log.debug(f"Updated cell {get_column_letter(change.col)}{change.row} = {value}")
-
-                changes_applied += 1
-
-            except Exception as e:
-                log.error(f"Error updating cell at row={change.row}, col={change.col}: {e}")
-                continue
-
-        # Save the workbook
-        try:
-            wb.save(file_path)
-            wb.close()
-            log.info(f"Successfully updated {changes_applied} cells in file {request.fileId}")
         except Exception as e:
             log.error(f"Error saving workbook {request.fileId}: {e}")
             raise HTTPException(
@@ -230,7 +406,12 @@ async def get_excel_metadata(
 
         # Load the workbook (data_only=True for faster loading)
         try:
-            wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
+            metadata_load_kwargs = {
+                **_get_workbook_load_kwargs(file.filename),
+                "data_only": True,
+                "read_only": True,
+            }
+            wb = openpyxl.load_workbook(file_path, **metadata_load_kwargs)
             sheet_names = wb.sheetnames
             active_sheet = wb.active.title if wb.active else None
             wb.close()
@@ -379,7 +560,9 @@ async def validate_excel_changes(
 
         # Load the workbook (need formulas, not values)
         try:
-            wb = openpyxl.load_workbook(file_path, data_only=False)
+            wb = openpyxl.load_workbook(
+                file_path, **_get_workbook_load_kwargs(file.filename)
+            )
         except Exception as e:
             log.error(f"Error loading workbook for validation {request.fileId}: {e}")
             raise HTTPException(
