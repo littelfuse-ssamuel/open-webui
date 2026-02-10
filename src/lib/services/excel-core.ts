@@ -9,7 +9,8 @@
 import type {
 	ExcelArtifact,
 	ExcelUpdateRequest,
-	ExcelUpdateResponse
+	ExcelUpdateResponse,
+	ExcelDownloadGateResponse
 } from '$lib/types/excel';
 import { isValidExcelArtifact, EXCEL_MIME_TYPE } from '$lib/types/excel';
 
@@ -87,6 +88,29 @@ class ExcelCoreService {
 		if (!response.ok) {
 			const errorData = await response.json().catch(() => ({}));
 			throw new Error(errorData.detail || 'Failed to save Excel changes');
+		}
+
+		return response.json();
+	}
+
+
+	async checkDownloadReady(params: {
+		fileId: string;
+		strictMode?: boolean;
+		allowLlmRepair?: boolean;
+		llmModelId?: string;
+		valveLlmModelId?: string;
+		fallbackModelId?: string;
+	}): Promise<ExcelDownloadGateResponse> {
+		const response = await fetch('/api/v1/excel/download-ready', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(params)
+		});
+
+		if (!response.ok) {
+			const errorData = await response.json().catch(() => ({}));
+			throw new Error(errorData.detail || 'Failed to run download QC gate');
 		}
 
 		return response.json();

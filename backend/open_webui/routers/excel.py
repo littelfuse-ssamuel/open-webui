@@ -5,12 +5,13 @@ Excel file editing API endpoints
 import asyncio
 import logging
 import os
+import re
 import shutil
 import tempfile
 import zipfile
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Literal
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 import openpyxl
@@ -249,6 +250,42 @@ class ExcelUpdateResponse(BaseModel):
     """Response from Excel update operation"""
     status: str
     message: Optional[str] = None
+    qcReport: Optional["ExcelQcReport"] = None
+
+
+class ExcelQcIssue(BaseModel):
+    sheet: str
+    cell: str
+    severity: Literal["critical", "warning"]
+    issueType: str
+    message: str
+    originalFormula: Optional[str] = None
+    repairedFormula: Optional[str] = None
+
+
+class ExcelQcReport(BaseModel):
+    blocked: bool
+    blockReason: str
+    criticalUnresolved: int
+    issues: List[ExcelQcIssue]
+    recommendedActions: List[str]
+
+
+class ExcelDownloadReadyRequest(BaseModel):
+    fileId: str
+    strictMode: Optional[bool] = True
+    allowLlmRepair: Optional[bool] = False
+    llmModelId: Optional[str] = None
+    valveLlmModelId: Optional[str] = None
+    fallbackModelId: Optional[str] = None
+
+
+class ExcelDownloadReadyResponse(BaseModel):
+    status: str
+    downloadUrl: Optional[str] = None
+    qcReport: Optional[ExcelQcReport] = None
+    selectedLlmModelId: Optional[str] = None
+    selectedLlmModelSource: Optional[str] = None
 
 
 class ExcelMetadataResponse(BaseModel):
@@ -256,6 +293,113 @@ class ExcelMetadataResponse(BaseModel):
     fileId: str
     sheetNames: List[str]
     activeSheet: Optional[str] = None
+
+
+def _build_qc_report(issues: list[ExcelQcIssue], operation: str) -> ExcelQcReport:
+    critical = [i for i in issues if i.severity == "critical"]
+    blocked = len(critical) > 0
+    reason = (
+        "QC blocked: unresolved formula integrity issues"
+        if blocked
+        else "No blocking quality issues detected"
+    )
+    return ExcelQcReport(
+        blocked=blocked,
+        blockReason=reason,
+        criticalUnresolved=len(critical),
+        issues=issues[:50],
+        recommendedActions=(
+            [
+                "Review impacted formulas and referenced ranges before retrying.",
+                "Fix invalid references (#REF!, #NAME?, #VALUE!) in the listed cells.",
+                f"Retry the {operation} after correcting the workbook formulas.",
+            ]
+            if blocked
+            else []
+        ),
+    )
+
+
+def _run_formula_qc_and_repairs(wb) -> list[ExcelQcIssue]:
+    issues: list[ExcelQcIssue] = []
+    invalid_token_re = re.compile(r"#REF!|#NAME\?|#VALUE!", re.IGNORECASE)
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        for row in ws.iter_rows():
+            for cell in row:
+                value = cell.value
+                if not (isinstance(value, str) and value.startswith("=")):
+                    continue
+
+                formula = value
+                repaired_formula = formula
+                repaired = False
+
+                if formula.startswith("=="):
+                    repaired_formula = "=" + formula.lstrip("=")
+                    repaired = True
+
+                if repaired_formula.count("(") != repaired_formula.count(")"):
+                    issues.append(
+                        ExcelQcIssue(
+                            sheet=sheet_name,
+                            cell=f"{get_column_letter(cell.column)}{cell.row}",
+                            severity="critical",
+                            issueType="unbalanced_parentheses",
+                            message="Formula has unbalanced parentheses.",
+                            originalFormula=formula,
+                            repairedFormula=repaired_formula if repaired else None,
+                        )
+                    )
+
+                if invalid_token_re.search(repaired_formula):
+                    issues.append(
+                        ExcelQcIssue(
+                            sheet=sheet_name,
+                            cell=f"{get_column_letter(cell.column)}{cell.row}",
+                            severity="critical",
+                            issueType="invalid_reference_token",
+                            message="Formula contains an invalid Excel error token.",
+                            originalFormula=formula,
+                            repairedFormula=repaired_formula if repaired else None,
+                        )
+                    )
+
+                if repaired and repaired_formula != formula:
+                    cell.value = repaired_formula
+                    issues.append(
+                        ExcelQcIssue(
+                            sheet=sheet_name,
+                            cell=f"{get_column_letter(cell.column)}{cell.row}",
+                            severity="warning",
+                            issueType="auto_repaired_formula_prefix",
+                            message="Auto-repaired malformed formula prefix.",
+                            originalFormula=formula,
+                            repairedFormula=repaired_formula,
+                        )
+                    )
+
+    return issues
+
+
+def _resolve_llm_qc_model_id(
+    configured_models: dict[str, Any],
+    requested_model_id: Optional[str] = None,
+    valve_model_id: Optional[str] = None,
+    fallback_model_id: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    candidates = [
+        ("request", requested_model_id),
+        ("valve", valve_model_id),
+        ("fallback", fallback_model_id),
+    ]
+
+    for source, model_id in candidates:
+        if model_id and model_id in configured_models:
+            return model_id, source
+
+    return None, None
 
 
 @router.post("/update")
@@ -344,15 +488,130 @@ async def update_excel_file(
                 detail=f"Failed to save changes: {str(e)}",
             )
 
+        # Run post-save QC by reloading workbook and checking formula integrity.
+        try:
+            qc_wb = openpyxl.load_workbook(file_path, **_get_workbook_load_kwargs(file.filename))
+            qc_issues = _run_formula_qc_and_repairs(qc_wb)
+            qc_report = _build_qc_report(qc_issues, operation="save")
+            qc_wb.close()
+        except Exception as qc_error:
+            log.warning(f"QC scan failed for file {request.fileId}: {qc_error}")
+            qc_report = ExcelQcReport(
+                blocked=False,
+                blockReason="QC scan unavailable",
+                criticalUnresolved=0,
+                issues=[],
+                recommendedActions=[],
+            )
+
         return ExcelUpdateResponse(
-            status="ok",
-            message=f"Successfully updated {changes_applied} cells",
+            status="blocked" if qc_report.blocked else "ok",
+            message=(
+                "QC blocked: unresolved formula integrity issues"
+                if qc_report.blocked
+                else f"Successfully updated {changes_applied} cells"
+            ),
+            qcReport=qc_report,
         )
 
     except HTTPException:
         raise
     except Exception as e:
         log.error(f"Unexpected error updating Excel file: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal server error: {str(e)}",
+        )
+
+
+
+
+@router.post("/download-ready")
+async def excel_download_ready(
+    request: ExcelDownloadReadyRequest,
+    user=Depends(get_verified_user),
+) -> ExcelDownloadReadyResponse:
+    """Run final QC gate before download and return allow/block state."""
+    try:
+        file = Files.get_file_by_id(request.fileId)
+
+        if not file:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ERROR_MESSAGES.NOT_FOUND,
+            )
+
+        if file.user_id != user.id and user.role != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+            )
+
+        file_path = Path(Storage.get_file(file.path))
+        if not file_path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="File not found in storage",
+            )
+
+        try:
+            wb = openpyxl.load_workbook(file_path, **_get_workbook_load_kwargs(file.filename))
+            issues = _run_formula_qc_and_repairs(wb)
+            qc_report = _build_qc_report(issues, operation="download")
+            wb.close()
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid Excel file: {str(e)}",
+            )
+
+        selected_llm_model_id = None
+        selected_llm_model_source = None
+        if request.allowLlmRepair:
+            configured_models = request.app.state.MODELS or {}
+            if not configured_models:
+                try:
+                    from open_webui.main import get_all_models
+
+                    await get_all_models(request, user=user)
+                    configured_models = request.app.state.MODELS or {}
+                except Exception:
+                    configured_models = request.app.state.MODELS or {}
+
+            selected_llm_model_id, selected_llm_model_source = _resolve_llm_qc_model_id(
+                configured_models=configured_models,
+                requested_model_id=request.llmModelId,
+                valve_model_id=request.valveLlmModelId,
+                fallback_model_id=request.fallbackModelId,
+            )
+
+        if qc_report.blocked:
+            log.info(
+                "excel_qc_blocked fileId=%s operation=download blocked=true critical=%s selected_model=%s source=%s",
+                request.fileId,
+                qc_report.criticalUnresolved,
+                selected_llm_model_id,
+                selected_llm_model_source,
+            )
+            return ExcelDownloadReadyResponse(
+                status="blocked",
+                qcReport=qc_report,
+                selectedLlmModelId=selected_llm_model_id,
+                selectedLlmModelSource=selected_llm_model_source,
+            )
+
+        return ExcelDownloadReadyResponse(
+            status="ok",
+            downloadUrl=f"/api/v1/files/{request.fileId}/content",
+            qcReport=qc_report,
+            selectedLlmModelId=selected_llm_model_id,
+            selectedLlmModelSource=selected_llm_model_source,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Unexpected error in download-ready for {request.fileId}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal server error: {str(e)}",

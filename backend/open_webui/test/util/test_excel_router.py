@@ -133,3 +133,105 @@ def test_excel_update_rolls_back_when_replace_fails(tmp_path: Path, monkeypatch)
     wb = openpyxl.load_workbook(file_path, data_only=False)
     assert wb["Sheet1"]["B2"].value == 10
     wb.close()
+
+
+def test_formula_qc_detects_critical_invalid_tokens(tmp_path: Path):
+    file_path = tmp_path / "qc_invalid.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws["A1"] = "=SUM(B1:B2)"
+    ws["A2"] = "=#REF!+1"
+    wb.save(file_path)
+    wb.close()
+
+    wb2 = openpyxl.load_workbook(file_path, data_only=False)
+    issues = excel_router._run_formula_qc_and_repairs(wb2)
+    wb2.close()
+
+    assert any(i.issueType == "invalid_reference_token" and i.severity == "critical" for i in issues)
+
+
+def test_formula_qc_auto_repairs_double_equals(tmp_path: Path):
+    file_path = tmp_path / "qc_repair.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws["A1"] = "==SUM(B1:B2)"
+    wb.save(file_path)
+    wb.close()
+
+    wb2 = openpyxl.load_workbook(file_path, data_only=False)
+    issues = excel_router._run_formula_qc_and_repairs(wb2)
+    assert wb2["Sheet1"]["A1"].value == "=SUM(B1:B2)"
+    wb2.close()
+
+    assert any(i.issueType == "auto_repaired_formula_prefix" and i.severity == "warning" for i in issues)
+
+
+def test_build_qc_report_blocks_on_critical():
+    report = excel_router._build_qc_report(
+        [
+            excel_router.ExcelQcIssue(
+                sheet="Sheet1",
+                cell="A1",
+                severity="critical",
+                issueType="invalid_reference_token",
+                message="bad",
+            )
+        ],
+        operation="download",
+    )
+
+    assert report.blocked is True
+    assert report.criticalUnresolved == 1
+    assert report.blockReason
+
+
+def test_resolve_llm_qc_model_id_prefers_request_over_valve_and_fallback():
+    configured_models = {
+        "request-model": {},
+        "valve-model": {},
+        "fallback-model": {},
+    }
+
+    model_id, source = excel_router._resolve_llm_qc_model_id(
+        configured_models=configured_models,
+        requested_model_id="request-model",
+        valve_model_id="valve-model",
+        fallback_model_id="fallback-model",
+    )
+
+    assert model_id == "request-model"
+    assert source == "request"
+
+
+def test_resolve_llm_qc_model_id_uses_valve_when_request_is_invalid():
+    configured_models = {
+        "valve-model": {},
+        "fallback-model": {},
+    }
+
+    model_id, source = excel_router._resolve_llm_qc_model_id(
+        configured_models=configured_models,
+        requested_model_id="missing-request-model",
+        valve_model_id="valve-model",
+        fallback_model_id="fallback-model",
+    )
+
+    assert model_id == "valve-model"
+    assert source == "valve"
+
+
+def test_resolve_llm_qc_model_id_returns_none_when_no_candidates_are_configured():
+    configured_models = {"configured": {}}
+
+    model_id, source = excel_router._resolve_llm_qc_model_id(
+        configured_models=configured_models,
+        requested_model_id="missing-request-model",
+        valve_model_id="missing-valve-model",
+        fallback_model_id="missing-fallback-model",
+    )
+
+    assert model_id is None
+    assert source is None
