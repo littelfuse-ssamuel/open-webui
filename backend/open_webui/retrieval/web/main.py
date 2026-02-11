@@ -44,3 +44,10 @@ class SearchResult(BaseModel):
     link: str
     title: Optional[str]
     snippet: Optional[str]
+    source_quality_score: Optional[float] = None
+    source_type: Optional[str] = None
+    published_date: Optional[str] = None
+    retrieved_at: Optional[str] = None
+    content_hash: Optional[str] = None
+    evidence_spans: Optional[list[dict]] = None
+    query_variant: Optional[str] = None

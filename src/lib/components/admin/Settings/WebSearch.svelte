@@ -535,6 +535,71 @@
 										bind:value={webConfig.JINA_API_KEY}
 									/>
 								</div>
+
+								<div class="mt-3 space-y-2">
+									<div class="flex w-full justify-between">
+										<div class="self-center text-xs font-medium">
+											{$i18n.t('Enhanced Jina Search')}
+										</div>
+										<Switch bind:state={webConfig.JINA_ENHANCED_SEARCH_ENABLED} />
+									</div>
+
+									<div class="flex w-full justify-between">
+										<div class="self-center text-xs font-medium">
+											{$i18n.t('Strict Authority Mode')}
+										</div>
+										<Switch bind:state={webConfig.JINA_STRICT_AUTHORITY_MODE} />
+									</div>
+
+									<div class="flex w-full justify-between">
+										<div class="self-center text-xs font-medium">
+											{$i18n.t('Enable Optional Rerank')}
+										</div>
+										<Switch bind:state={webConfig.JINA_ENABLE_OPTIONAL_RERANK} />
+									</div>
+								</div>
+
+								<div class="mt-3">
+									<div class="self-center text-xs font-medium mb-1">
+										{$i18n.t('Jina Max Candidates')}
+									</div>
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										type="number"
+										min="3"
+										max="200"
+										placeholder={$i18n.t('Jina Max Candidates')}
+										bind:value={webConfig.JINA_MAX_CANDIDATES}
+									/>
+								</div>
+
+								<div class="mt-2">
+									<div class="self-center text-xs font-medium mb-1">
+										{$i18n.t('Jina Max Evidence Items')}
+									</div>
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										type="number"
+										min="1"
+										max="50"
+										placeholder={$i18n.t('Jina Max Evidence Items')}
+										bind:value={webConfig.JINA_MAX_EVIDENCE_ITEMS}
+									/>
+								</div>
+
+								<div class="mt-2">
+									<div class="self-center text-xs font-medium mb-1">
+										{$i18n.t('Jina Output Mode')}
+									</div>
+									<select
+										class="dark:bg-gray-900 w-full rounded-lg px-3 py-2 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={webConfig.JINA_OUTPUT_MODE}
+									>
+										<option value="legacy">legacy</option>
+										<option value="markdown">markdown</option>
+										<option value="json_markdown">json_markdown</option>
+									</select>
+								</div>
 							</div>
 						{:else if webConfig.WEB_SEARCH_ENGINE === 'bing'}
 							<div class="mb-2.5 flex w-full flex-col">

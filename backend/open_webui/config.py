@@ -3400,6 +3400,42 @@ JINA_API_BASE_URL = PersistentConfig(
     os.getenv("JINA_API_BASE_URL", ""),
 )
 
+JINA_ENHANCED_SEARCH_ENABLED = PersistentConfig(
+    "JINA_ENHANCED_SEARCH_ENABLED",
+    "rag.web.search.jina_enhanced_search_enabled",
+    os.getenv("JINA_ENHANCED_SEARCH_ENABLED", "False").lower() == "true",
+)
+
+JINA_STRICT_AUTHORITY_MODE = PersistentConfig(
+    "JINA_STRICT_AUTHORITY_MODE",
+    "rag.web.search.jina_strict_authority_mode",
+    os.getenv("JINA_STRICT_AUTHORITY_MODE", "False").lower() == "true",
+)
+
+JINA_MAX_CANDIDATES = PersistentConfig(
+    "JINA_MAX_CANDIDATES",
+    "rag.web.search.jina_max_candidates",
+    int(os.getenv("JINA_MAX_CANDIDATES", "24")),
+)
+
+JINA_MAX_EVIDENCE_ITEMS = PersistentConfig(
+    "JINA_MAX_EVIDENCE_ITEMS",
+    "rag.web.search.jina_max_evidence_items",
+    int(os.getenv("JINA_MAX_EVIDENCE_ITEMS", "8")),
+)
+
+JINA_ENABLE_OPTIONAL_RERANK = PersistentConfig(
+    "JINA_ENABLE_OPTIONAL_RERANK",
+    "rag.web.search.jina_enable_optional_rerank",
+    os.getenv("JINA_ENABLE_OPTIONAL_RERANK", "False").lower() == "true",
+)
+
+JINA_OUTPUT_MODE = PersistentConfig(
+    "JINA_OUTPUT_MODE",
+    "rag.web.search.jina_output_mode",
+    os.getenv("JINA_OUTPUT_MODE", "legacy"),
+)
+
 SEARCHAPI_API_KEY = PersistentConfig(
     "SEARCHAPI_API_KEY",
     "rag.web.search.searchapi_api_key",

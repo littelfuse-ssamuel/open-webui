@@ -552,6 +552,13 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
             "SERPAPI_API_KEY": request.app.state.config.SERPAPI_API_KEY,
             "SERPAPI_ENGINE": request.app.state.config.SERPAPI_ENGINE,
             "JINA_API_KEY": request.app.state.config.JINA_API_KEY,
+            "JINA_API_BASE_URL": request.app.state.config.JINA_API_BASE_URL,
+            "JINA_ENHANCED_SEARCH_ENABLED": request.app.state.config.JINA_ENHANCED_SEARCH_ENABLED,
+            "JINA_STRICT_AUTHORITY_MODE": request.app.state.config.JINA_STRICT_AUTHORITY_MODE,
+            "JINA_MAX_CANDIDATES": request.app.state.config.JINA_MAX_CANDIDATES,
+            "JINA_MAX_EVIDENCE_ITEMS": request.app.state.config.JINA_MAX_EVIDENCE_ITEMS,
+            "JINA_ENABLE_OPTIONAL_RERANK": request.app.state.config.JINA_ENABLE_OPTIONAL_RERANK,
+            "JINA_OUTPUT_MODE": request.app.state.config.JINA_OUTPUT_MODE,
             "BING_SEARCH_V7_ENDPOINT": request.app.state.config.BING_SEARCH_V7_ENDPOINT,
             "BING_SEARCH_V7_SUBSCRIPTION_KEY": request.app.state.config.BING_SEARCH_V7_SUBSCRIPTION_KEY,
             "EXA_API_KEY": request.app.state.config.EXA_API_KEY,
@@ -609,6 +616,13 @@ class WebConfig(BaseModel):
     SERPAPI_API_KEY: Optional[str] = None
     SERPAPI_ENGINE: Optional[str] = None
     JINA_API_KEY: Optional[str] = None
+    JINA_API_BASE_URL: Optional[str] = None
+    JINA_ENHANCED_SEARCH_ENABLED: Optional[bool] = None
+    JINA_STRICT_AUTHORITY_MODE: Optional[bool] = None
+    JINA_MAX_CANDIDATES: Optional[int] = None
+    JINA_MAX_EVIDENCE_ITEMS: Optional[int] = None
+    JINA_ENABLE_OPTIONAL_RERANK: Optional[bool] = None
+    JINA_OUTPUT_MODE: Optional[str] = None
     BING_SEARCH_V7_ENDPOINT: Optional[str] = None
     BING_SEARCH_V7_SUBSCRIPTION_KEY: Optional[str] = None
     EXA_API_KEY: Optional[str] = None
@@ -1126,6 +1140,23 @@ async def update_rag_config(
         request.app.state.config.SERPAPI_API_KEY = form_data.web.SERPAPI_API_KEY
         request.app.state.config.SERPAPI_ENGINE = form_data.web.SERPAPI_ENGINE
         request.app.state.config.JINA_API_KEY = form_data.web.JINA_API_KEY
+        request.app.state.config.JINA_API_BASE_URL = form_data.web.JINA_API_BASE_URL
+        request.app.state.config.JINA_ENHANCED_SEARCH_ENABLED = (
+            form_data.web.JINA_ENHANCED_SEARCH_ENABLED
+        )
+        request.app.state.config.JINA_STRICT_AUTHORITY_MODE = (
+            form_data.web.JINA_STRICT_AUTHORITY_MODE
+        )
+        request.app.state.config.JINA_MAX_CANDIDATES = (
+            form_data.web.JINA_MAX_CANDIDATES
+        )
+        request.app.state.config.JINA_MAX_EVIDENCE_ITEMS = (
+            form_data.web.JINA_MAX_EVIDENCE_ITEMS
+        )
+        request.app.state.config.JINA_ENABLE_OPTIONAL_RERANK = (
+            form_data.web.JINA_ENABLE_OPTIONAL_RERANK
+        )
+        request.app.state.config.JINA_OUTPUT_MODE = form_data.web.JINA_OUTPUT_MODE
         request.app.state.config.BING_SEARCH_V7_ENDPOINT = (
             form_data.web.BING_SEARCH_V7_ENDPOINT
         )
@@ -1277,6 +1308,13 @@ async def update_rag_config(
             "SERPAPI_API_KEY": request.app.state.config.SERPAPI_API_KEY,
             "SERPAPI_ENGINE": request.app.state.config.SERPAPI_ENGINE,
             "JINA_API_KEY": request.app.state.config.JINA_API_KEY,
+            "JINA_API_BASE_URL": request.app.state.config.JINA_API_BASE_URL,
+            "JINA_ENHANCED_SEARCH_ENABLED": request.app.state.config.JINA_ENHANCED_SEARCH_ENABLED,
+            "JINA_STRICT_AUTHORITY_MODE": request.app.state.config.JINA_STRICT_AUTHORITY_MODE,
+            "JINA_MAX_CANDIDATES": request.app.state.config.JINA_MAX_CANDIDATES,
+            "JINA_MAX_EVIDENCE_ITEMS": request.app.state.config.JINA_MAX_EVIDENCE_ITEMS,
+            "JINA_ENABLE_OPTIONAL_RERANK": request.app.state.config.JINA_ENABLE_OPTIONAL_RERANK,
+            "JINA_OUTPUT_MODE": request.app.state.config.JINA_OUTPUT_MODE,
             "BING_SEARCH_V7_ENDPOINT": request.app.state.config.BING_SEARCH_V7_ENDPOINT,
             "BING_SEARCH_V7_SUBSCRIPTION_KEY": request.app.state.config.BING_SEARCH_V7_SUBSCRIPTION_KEY,
             "EXA_API_KEY": request.app.state.config.EXA_API_KEY,
@@ -2136,6 +2174,10 @@ def search_web(request: Request, engine: str, query: str, user=None) -> list[Sea
             query,
             request.app.state.config.WEB_SEARCH_RESULT_COUNT,
             request.app.state.config.JINA_API_BASE_URL,
+            bool(request.app.state.config.JINA_ENHANCED_SEARCH_ENABLED),
+            bool(request.app.state.config.JINA_STRICT_AUTHORITY_MODE),
+            request.app.state.config.JINA_MAX_CANDIDATES or 24,
+            request.app.state.config.JINA_MAX_EVIDENCE_ITEMS or 8,
         )
     elif engine == "bing":
         return search_bing(
@@ -2287,6 +2329,13 @@ async def process_web_search(
                         "title": result.title,
                         "snippet": result.snippet,
                         "link": result.link,
+                        "source_quality_score": result.source_quality_score,
+                        "source_type": result.source_type,
+                        "published_date": result.published_date,
+                        "retrieved_at": result.retrieved_at,
+                        "content_hash": result.content_hash,
+                        "evidence_spans": result.evidence_spans,
+                        "query_variant": result.query_variant,
                     },
                 )
                 for result in search_results
@@ -2304,8 +2353,19 @@ async def process_web_search(
         urls = [
             doc.metadata.get("source") for doc in docs if doc.metadata.get("source")
         ]  # only keep the urls returned by the loader
+        search_item_by_link = {
+            item.link: (
+                item.model_dump(exclude_none=True)
+                if hasattr(item, "model_dump")
+                else item.dict(exclude_none=True)
+            )
+            for item in result_items
+        }
+
         result_items = [
-            dict(item) for item in result_items if item.link in urls
+            search_item_by_link[item.link]
+            for item in result_items
+            if item.link in urls and item.link in search_item_by_link
         ]  # only keep the search results that have been loaded
 
         if request.app.state.config.BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL:
@@ -2324,6 +2384,17 @@ async def process_web_search(
                 "loaded_count": len(docs),
             }
         else:
+            # Merge search metadata into loader documents when source URL matches.
+            for doc in docs:
+                source = doc.metadata.get("source")
+                if not source:
+                    continue
+                search_item = search_item_by_link.get(source)
+                if not search_item:
+                    continue
+                for key, value in search_item.items():
+                    doc.metadata[key] = value
+
             # Create a single collection for all documents
             collection_name = (
                 f"web-search-{calculate_sha256_string('-'.join(form_data.queries))}"[
