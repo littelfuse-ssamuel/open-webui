@@ -53,7 +53,7 @@ class JSONField(types.TypeDecorator):
 # Workaround to handle the peewee migration
 # This is required to ensure the peewee migration is handled before the alembic migration
 def handle_peewee_migration(DATABASE_URL):
-    # db = None
+    db = None
     try:
         # Replace the postgresql:// with postgres:// to handle the peewee migration
         db = register_connection(DATABASE_URL.replace("postgresql://", "postgres://"))
@@ -77,10 +77,17 @@ def handle_peewee_migration(DATABASE_URL):
         assert db.is_closed(), "Database connection is still open."
 
 
-# NOTE:  Peewee migrations disabled for custom fork
-# Set ENABLE_DB_MIGRATIONS=true in env to re-enable if needed
-if ENABLE_DB_MIGRATIONS:
+def should_run_peewee_migration(database_url: str) -> bool:
+    # Legacy peewee migrations are only needed for SQLite-era databases.
+    return database_url.startswith("sqlite")
+
+
+if ENABLE_DB_MIGRATIONS and should_run_peewee_migration(DATABASE_URL):
     handle_peewee_migration(DATABASE_URL)
+elif ENABLE_DB_MIGRATIONS:
+    log.info(
+        "Skipping legacy peewee migrations for non-SQLite database; Alembic handles schema migrations."
+    )
 
 
 SQLALCHEMY_DATABASE_URL = DATABASE_URL
