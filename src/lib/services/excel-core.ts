@@ -10,9 +10,11 @@ import type {
 	ExcelArtifact,
 	ExcelUpdateRequest,
 	ExcelUpdateResponse,
-	ExcelDownloadGateResponse
+	ExcelDownloadGateResponse,
+	ExcelGenerateRequest,
+	ExcelGenerateResponse
 } from '$lib/types/excel';
-import { isValidExcelArtifact, EXCEL_MIME_TYPE } from '$lib/types/excel';
+import { EXCEL_MIME_TYPE } from '$lib/types/excel';
 
 /**
  * Excel Core Service singleton
@@ -101,6 +103,8 @@ class ExcelCoreService {
 		llmModelId?: string;
 		valveLlmModelId?: string;
 		fallbackModelId?: string;
+		blockOnCriticalQc?: boolean;
+		block_on_critical_qc?: boolean;
 	}): Promise<ExcelDownloadGateResponse> {
 		const response = await fetch('/api/v1/excel/download-ready', {
 			method: 'POST',
@@ -111,6 +115,24 @@ class ExcelCoreService {
 		if (!response.ok) {
 			const errorData = await response.json().catch(() => ({}));
 			throw new Error(errorData.detail || 'Failed to run download QC gate');
+		}
+
+		return response.json();
+	}
+
+	/**
+	 * Generate a new workbook using orchestrated planning.
+	 */
+	async generateWorkbook(request: ExcelGenerateRequest): Promise<ExcelGenerateResponse> {
+		const response = await fetch('/api/v1/excel/generate', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(request)
+		});
+
+		if (!response.ok) {
+			const errorData = await response.json().catch(() => ({}));
+			throw new Error(errorData.detail || 'Failed to generate workbook');
 		}
 
 		return response.json();

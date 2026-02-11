@@ -669,7 +669,7 @@
 							sheet: sheetName,
 							changes,
 							createSheetIfMissing: true
-						} as any);
+						});
 
 						if (saveResponse.status === 'blocked' && saveResponse.qcReport) {
 							qcReport = saveResponse.qcReport;

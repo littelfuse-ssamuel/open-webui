@@ -10,6 +10,21 @@ from open_webui.models.files import FileModel, FileForm, Files
 
 log = logging.getLogger(__name__)
 
+EXCEL_CONTENT_TYPES = {
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel.sheet.macroEnabled.12",
+    "application/vnd.ms-excel",
+}
+
+
+def _excel_content_type_from_filename(filename: str) -> str:
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".xlsm":
+        return "application/vnd.ms-excel.sheet.macroEnabled.12"
+    if suffix == ".xls":
+        return "application/vnd.ms-excel"
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
 
 async def emit_excel_artifact(
     event_emitter,
@@ -93,7 +108,11 @@ async def emit_file_artifacts(
                 file_type = "image"
             elif "audio" in content_type:
                 file_type = "audio"
-            elif content_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+            elif (
+                content_type in EXCEL_CONTENT_TYPES
+                or "spreadsheet" in content_type
+                or "ms-excel" in content_type
+            ):
                 file_type = "excel"
 
             files.append({
@@ -173,9 +192,10 @@ def create_excel_file_record(
     """
     try:
         # Create metadata
+        content_type = _excel_content_type_from_filename(filename)
         meta = {
             "name": filename,
-            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "content_type": content_type,
             "size": Path(file_path).stat().st_size if Path(file_path).exists() else 0,
         }
 

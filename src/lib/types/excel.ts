@@ -62,6 +62,18 @@ export interface ExcelUpdateRequest {
 	fileId: string;
 	sheet: string;
 	changes: ExcelCellChange[];
+	strictFormulaMode?: boolean;
+	blockReferencedByFormula?: boolean;
+	allowFormulaOverwrite?: boolean;
+	blockOnCriticalQc?: boolean;
+	createSheetIfMissing?: boolean;
+
+	// Snake_case compatibility aliases
+	strict_formula_mode?: boolean;
+	block_referenced_by_formula?: boolean;
+	allow_formula_overwrite?: boolean;
+	block_on_critical_qc?: boolean;
+	create_sheet_if_missing?: boolean;
 }
 
 /** Individual cell change for save operations */
@@ -103,6 +115,47 @@ export interface ExcelDownloadGateResponse {
 	qcReport?: ExcelQcReport;
 	selectedLlmModelId?: string;
 	selectedLlmModelSource?: 'request' | 'valve' | 'fallback';
+}
+
+export type ExcelGenerationTemplate = 'executive_dashboard' | 'finance' | 'operations';
+
+export interface WorkbookSpecSummary {
+	template: ExcelGenerationTemplate;
+	sheet_count: number;
+	column_count: number;
+	has_charts: boolean;
+	refinement_iterations: number;
+}
+
+export interface GenerationScore {
+	visual_score: number;
+	structure_score: number;
+	formula_score: number;
+	overall_score: number;
+}
+
+export interface ExcelGenerateRequest {
+	prompt: string;
+	template?: ExcelGenerationTemplate;
+	filename?: string;
+	include_sample_data?: boolean;
+	include_charts?: boolean;
+	max_rows_per_sheet?: number;
+	minimum_visual_score?: number;
+	max_refinement_iterations?: number;
+	block_on_critical_qc?: boolean;
+}
+
+export interface ExcelGenerateResponse {
+	status: 'ok' | 'blocked' | 'error';
+	message: string;
+	fileId?: string;
+	downloadUrl?: string;
+	artifact?: ExcelArtifact;
+	workbookSpec?: WorkbookSpecSummary;
+	generationScore?: GenerationScore;
+	qcReport?: ExcelQcReport;
+	repairsApplied?: number;
 }
 
 /** Supported Excel file extensions */

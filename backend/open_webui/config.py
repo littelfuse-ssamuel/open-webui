@@ -2213,7 +2213,15 @@ DEFAULT_CODE_INTERPRETER_PROMPT = """
          print("⚠️  Excel generation not available in this environment (Pyodide). Displaying data as formatted table instead.")
      ```
    - If `openpyxl` is available (Jupyter environment), create Excel files and display them:
-     ```python
+   - Prefer a **spec-first workbook plan** before writing cells:
+     * Data plan: sheets, columns, data types, formulas
+     * Layout plan: title/subtitle rows, header row, freeze panes, filters, widths
+     * Content plan: summary notes and chart intent
+     * Style plan: theme colors, typography, number formats
+     * QC plan: formula sanity checks and visual consistency checks
+   - Use deterministic templates when useful (`executive_dashboard`, `finance`, `operations`) to improve consistency across runs.
+   - When quality is acceptable but visual polish is weak, perform up to 2 refinement passes (style/layout only), then re-check.
+   ```python
      import openpyxl
      from openpyxl.utils import get_column_letter
      import base64

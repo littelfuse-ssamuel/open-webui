@@ -26,6 +26,7 @@
 	import fileSaver from 'file-saver';
 	import type { ExcelArtifact } from '$lib/types/excel';
 	import { isValidExcelArtifact } from '$lib/types/excel';
+	import { excelCore } from '$lib/services/excel-core';
 
 	const { saveAs } = fileSaver;
 
@@ -126,11 +127,26 @@
 		}
 
 		if (content.type === 'excel') {
-			// For Excel artifacts, fetch the file and download
+			// For Excel artifacts, always honor backend QC download gating when fileId is available.
 			try {
-				const response = await fetch(content.url);
+				const excelContent = content as unknown as ExcelArtifact;
+				let downloadUrl = excelContent.url;
+
+				if (excelContent.fileId) {
+					const gate = await excelCore.checkDownloadReady({
+						fileId: excelContent.fileId,
+						strictMode: true
+					});
+					if (gate.status === 'blocked' && gate.qcReport) {
+						toast.error(`${gate.qcReport.blockReason}. Fix formulas before download.`);
+						return;
+					}
+					downloadUrl = gate.downloadUrl || excelContent.url;
+				}
+
+				const response = await fetch(downloadUrl);
 				const blob = await response.blob();
-				saveAs(blob, content.name || `artifact-${$chatId}-${selectedContentIdx}.xlsx`);
+				saveAs(blob, excelContent.name || `artifact-${$chatId}-${selectedContentIdx}.xlsx`);
 			} catch (e) {
 				console.error('Error downloading Excel file:', e);
 				toast.error('Failed to download Excel file');

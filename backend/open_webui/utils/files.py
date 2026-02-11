@@ -276,6 +276,34 @@ def get_image_base64_from_file_id(id: str) -> Optional[str]:
 # ===========================================
 
 
+def _excel_content_type_from_filename(filename: str) -> str:
+    suffix = Path(filename or "").suffix.lower()
+    if suffix == ".xlsm":
+        return "application/vnd.ms-excel.sheet.macroEnabled.12"
+    if suffix == ".xls":
+        return "application/vnd.ms-excel"
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _parse_excel_data_uri(base64_excel_string: str) -> tuple[Optional[str], Optional[str]]:
+    """
+    Parse supported Excel data URIs and return (content_type, base64_payload).
+    """
+    match = re.match(r"^data:([^;]+);base64,(.+)$", base64_excel_string or "", re.IGNORECASE)
+    if not match:
+        return None, None
+
+    content_type = (match.group(1) or "").strip().lower()
+    payload = match.group(2)
+    if content_type in {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel.sheet.macroenabled.12",
+        "application/vnd.ms-excel",
+    }:
+        return content_type, payload
+    return None, None
+
+
 def upload_excel_file(request, file_path, metadata, user):
     """
     Upload an Excel file from a file path and return the file artifact dict.
@@ -311,17 +339,19 @@ def upload_excel_file(request, file_path, metadata, user):
 
         # Create UploadFile object
         filename = os.path.basename(file_path)
+        content_type = _excel_content_type_from_filename(filename)
         file = UploadFile(
             file=io.BytesIO(excel_data),
             filename=filename,
             headers={
-                "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "content-type": content_type,
             },
         )
 
         # Add sheet names to metadata if available
         if metadata is None:
             metadata = {}
+        metadata["content_type"] = content_type
         if sheet_names:
             metadata["sheetNames"] = sheet_names
 
@@ -345,6 +375,7 @@ def upload_excel_file(request, file_path, metadata, user):
             "meta": {
                 "sheetNames": sheet_names,
                 "activeSheet": sheet_names[0] if sheet_names else None,
+                "content_type": content_type,
             },
         }
 
@@ -377,10 +408,9 @@ def get_excel_artifact_from_base64(request, base64_excel_string, filename, metad
         f"string_length={len(base64_excel_string)}"
     )
 
-    if "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64," in base64_excel_string:
+    content_type, excel_data_base64 = _parse_excel_data_uri(base64_excel_string)
+    if content_type and excel_data_base64:
         try:
-            # Extract base64 data
-            excel_data_base64 = base64_excel_string.split(",", 1)[1]
             log.info(f"Extracted base64 data, length={len(excel_data_base64)}")
 
             excel_data = base64.b64decode(excel_data_base64)
@@ -400,13 +430,14 @@ def get_excel_artifact_from_base64(request, base64_excel_string, filename, metad
                 file=io.BytesIO(excel_data),
                 filename=filename if filename else "output.xlsx",
                 headers={
-                    "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "content-type": content_type,
                 },
             )
 
             # Add sheet names to metadata
             if metadata is None:
                 metadata = {}
+            metadata["content_type"] = content_type
             if sheet_names:
                 metadata["sheetNames"] = sheet_names
 
@@ -432,6 +463,7 @@ def get_excel_artifact_from_base64(request, base64_excel_string, filename, metad
                 "meta": {
                     "sheetNames": sheet_names,
                     "activeSheet": sheet_names[0] if sheet_names else None,
+                    "content_type": content_type,
                 },
             }
 
@@ -445,5 +477,5 @@ def get_excel_artifact_from_base64(request, base64_excel_string, filename, metad
             log.error(f"Error processing base64 Excel data: {e}", exc_info=True)
             return None
 
-    log.warning("Base64 string does not contain Excel data URI prefix")
+    log.warning("Base64 string does not contain a supported Excel data URI prefix")
     return None

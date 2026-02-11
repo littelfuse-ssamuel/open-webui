@@ -1,11 +1,17 @@
 import asyncio
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import openpyxl
 import pytest
 from openpyxl.chart import BarChart, Reference
 
+from open_webui.excel.generation_spec import (
+    ExcelGenerateRequest,
+    GenerationScore,
+    WorkbookSpecSummary,
+)
 from open_webui.routers import excel as excel_router
 
 
@@ -540,3 +546,137 @@ def test_update_request_supports_snake_case_rollout_aliases():
     assert excel_router._resolve_rollout_bool(
         req.createSheetIfMissing, req.create_sheet_if_missing, False
     ) is True
+
+
+def test_excel_content_type_supports_xls_extension():
+    assert excel_router._excel_content_type("legacy.xls") == "application/vnd.ms-excel"
+
+
+def test_generate_excel_file_returns_artifact_when_qc_clean(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class _FakeOrchestrator:
+        def execute(self, request, qc_evaluator):
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Summary"
+            ws["A1"] = "Metric"
+            ws["B1"] = "Value"
+            ws["A2"] = "Revenue"
+            ws["B2"] = 100
+            return SimpleNamespace(
+                workbook=wb,
+                spec={},
+                score=GenerationScore(
+                    visual_score=0.92,
+                    structure_score=0.9,
+                    formula_score=1.0,
+                    overall_score=0.93,
+                ),
+                refinement_iterations=1,
+                qc_issues=[],
+                repairs_applied=0,
+                qc_blocked=False,
+            )
+
+        def build_spec_summary(self, spec, refinement_iterations):
+            return WorkbookSpecSummary(
+                template="executive_dashboard",
+                sheet_count=1,
+                column_count=2,
+                has_charts=False,
+                refinement_iterations=refinement_iterations,
+            )
+
+    def _fake_upload_file(handle, filename, metadata):
+        return "uploaded", "storage/generated/path"
+
+    def _fake_insert_new_file(user_id, file_form):
+        captured["file_form"] = file_form
+        return SimpleNamespace(id=file_form.id)
+
+    monkeypatch.setattr(excel_router, "ExcelGenerationOrchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(excel_router.Storage, "upload_file", _fake_upload_file)
+    monkeypatch.setattr(excel_router.Files, "insert_new_file", _fake_insert_new_file)
+
+    user = SimpleNamespace(id="user-1", role="user")
+    request = ExcelGenerateRequest(
+        prompt="Create an executive performance pack",
+        template="executive_dashboard",
+        filename="generated.xlsm",
+    )
+
+    response = asyncio.run(excel_router.generate_excel_file(request=request, user=user))
+
+    assert response.status == "ok"
+    assert response.fileId is not None
+    assert response.artifact is not None
+    assert response.artifact["type"] == "excel"
+    assert response.qcReport is not None
+    assert response.qcReport["blocked"] is False
+    assert captured["file_form"].meta["content_type"] == (
+        "application/vnd.ms-excel.sheet.macroEnabled.12"
+    )
+
+
+def test_generate_excel_file_blocks_on_critical_qc(monkeypatch):
+    uploaded = {"called": False}
+
+    class _FakeOrchestrator:
+        def execute(self, request, qc_evaluator):
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Sheet1"
+            ws["A1"] = "=#REF!+1"
+            return SimpleNamespace(
+                workbook=wb,
+                spec={},
+                score=GenerationScore(
+                    visual_score=0.75,
+                    structure_score=0.82,
+                    formula_score=0.5,
+                    overall_score=0.72,
+                ),
+                refinement_iterations=0,
+                qc_issues=[
+                    excel_router.ExcelQcIssue(
+                        sheet="Sheet1",
+                        cell="A1",
+                        severity="critical",
+                        issueType="invalid_reference_token",
+                        message="Invalid token",
+                    )
+                ],
+                repairs_applied=0,
+                qc_blocked=True,
+            )
+
+        def build_spec_summary(self, spec, refinement_iterations):
+            return WorkbookSpecSummary(
+                template="executive_dashboard",
+                sheet_count=1,
+                column_count=1,
+                has_charts=False,
+                refinement_iterations=refinement_iterations,
+            )
+
+    def _should_not_upload(*args, **kwargs):
+        uploaded["called"] = True
+        raise AssertionError("upload_file should not be called when QC blocks generation")
+
+    monkeypatch.setattr(excel_router, "ExcelGenerationOrchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(excel_router.Storage, "upload_file", _should_not_upload)
+
+    user = SimpleNamespace(id="user-1", role="user")
+    request = ExcelGenerateRequest(
+        prompt="Generate workbook with broken formulas",
+        block_on_critical_qc=True,
+    )
+
+    response = asyncio.run(excel_router.generate_excel_file(request=request, user=user))
+
+    assert response.status == "blocked"
+    assert response.fileId is None
+    assert response.qcReport is not None
+    assert response.qcReport["blocked"] is True
+    assert uploaded["called"] is False

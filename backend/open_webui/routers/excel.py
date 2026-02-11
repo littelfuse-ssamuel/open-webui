@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import tempfile
+import uuid
 import zipfile
 from contextlib import suppress
 from datetime import datetime
@@ -19,7 +20,12 @@ import openpyxl
 from openpyxl.utils import get_column_letter
 
 from open_webui.constants import ERROR_MESSAGES
-from open_webui.models.files import Files
+from open_webui.excel.generation_orchestrator import ExcelGenerationOrchestrator
+from open_webui.excel.generation_spec import (
+    ExcelGenerateRequest,
+    ExcelGenerateResponse,
+)
+from open_webui.models.files import FileForm, Files
 from open_webui.storage.provider import Storage
 from open_webui.utils.auth import get_verified_user
 
@@ -323,6 +329,156 @@ class ExcelMetadataResponse(BaseModel):
     activeSheet: Optional[str] = None
 
 
+def _normalize_generated_excel_filename(raw_filename: Optional[str], template: str) -> str:
+    if raw_filename:
+        sanitized = re.sub(r"[^A-Za-z0-9._\- ]+", "", raw_filename).strip()
+        if sanitized:
+            raw_filename = sanitized
+    if not raw_filename:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        raw_filename = f"generated_{template}_{timestamp}.xlsx"
+    if not raw_filename.lower().endswith((".xlsx", ".xlsm", ".xls")):
+        raw_filename = f"{raw_filename}.xlsx"
+    return raw_filename
+
+
+@router.post("/generate", response_model=ExcelGenerateResponse)
+async def generate_excel_file(
+    request: ExcelGenerateRequest,
+    user=Depends(get_verified_user),
+) -> ExcelGenerateResponse:
+    """
+    Generate a high-quality workbook using staged orchestration:
+    intent -> data -> layout -> content -> style -> build -> QC loop.
+    """
+    wb = None
+    temp_path = None
+    try:
+        orchestrator = ExcelGenerationOrchestrator()
+        generation_result = orchestrator.execute(
+            request=request,
+            qc_evaluator=_run_formula_qc_and_repairs,
+        )
+
+        wb = generation_result.workbook
+        qc_report = _build_qc_report(generation_result.qc_issues, operation="generate")
+        qc_blocked = _should_block_on_qc(
+            qc_report, block_on_critical_qc=bool(request.block_on_critical_qc)
+        )
+        summary = orchestrator.build_spec_summary(
+            generation_result.spec, generation_result.refinement_iterations
+        )
+
+        if qc_blocked:
+            return ExcelGenerateResponse(
+                status="blocked",
+                message="QC blocked: unresolved formula integrity issues",
+                workbookSpec=summary,
+                generationScore=generation_result.score,
+                qcReport=qc_report.model_dump(),
+                repairsApplied=generation_result.repairs_applied,
+            )
+
+        filename = _normalize_generated_excel_filename(request.filename, request.template)
+        ext = Path(filename).suffix.lower() or ".xlsx"
+        fd, tmp_name = tempfile.mkstemp(prefix="excel_gen_", suffix=ext)
+        os.close(fd)
+        temp_path = Path(tmp_name)
+
+        try:
+            wb.properties.calcId = None
+        except Exception:
+            pass
+        wb.save(temp_path)
+        _remove_calc_chain_if_present(temp_path)
+
+        verify_wb = openpyxl.load_workbook(temp_path, **_get_workbook_load_kwargs(filename))
+        verify_wb.close()
+
+        with open(temp_path, "rb") as handle:
+            _, stored_path = Storage.upload_file(handle, filename, {})
+
+        file_id = str(uuid.uuid4())
+        meta = {
+            "name": filename,
+            "content_type": _excel_content_type(filename),
+            "size": int(temp_path.stat().st_size),
+            "created_at": datetime.now().isoformat(),
+            "sheetNames": wb.sheetnames,
+            "activeSheet": wb.active.title if wb.active else None,
+            "excel_last_operation": "generate",
+            "excel_last_repairs_applied": generation_result.repairs_applied,
+            "excel_qc": {
+                "blocked": qc_report.blocked,
+                "criticalUnresolved": qc_report.criticalUnresolved,
+                "issueCount": len(qc_report.issues),
+                "blockReason": qc_report.blockReason,
+            },
+            "excel_generation": {
+                "template": summary.template,
+                "sheet_count": summary.sheet_count,
+                "column_count": summary.column_count,
+                "has_charts": summary.has_charts,
+                "refinement_iterations": summary.refinement_iterations,
+                "score": generation_result.score.model_dump(),
+            },
+        }
+
+        file_form = FileForm(
+            id=file_id,
+            filename=filename,
+            path=stored_path,
+            meta=meta,
+            data={"status": "completed"},
+        )
+        file_model = Files.insert_new_file(user.id, file_form)
+        if not file_model:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to persist generated workbook metadata",
+            )
+
+        download_url = f"/api/v1/files/{file_model.id}/content"
+        artifact = {
+            "type": "excel",
+            "url": download_url,
+            "name": filename,
+            "fileId": str(file_model.id),
+            "meta": {
+                "sheetNames": wb.sheetnames,
+                "activeSheet": wb.active.title if wb.active else None,
+            },
+        }
+
+        return ExcelGenerateResponse(
+            status="ok",
+            message="Workbook generated successfully",
+            fileId=str(file_model.id),
+            downloadUrl=download_url,
+            artifact=artifact,
+            workbookSpec=summary,
+            generationScore=generation_result.score,
+            qcReport=qc_report.model_dump(),
+            repairsApplied=generation_result.repairs_applied,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error("Error generating Excel workbook: %s", e, exc_info=True)
+        return ExcelGenerateResponse(
+            status="error",
+            message=f"Failed to generate workbook: {str(e)}",
+        )
+    finally:
+        if wb is not None:
+            with suppress(Exception):
+                wb.close()
+        if temp_path and temp_path.exists():
+            with suppress(Exception):
+                temp_path.unlink()
+
+
 def _build_qc_report(issues: list[ExcelQcIssue], operation: str) -> ExcelQcReport:
     critical = [i for i in issues if i.severity == "critical"]
     blocked = len(critical) > 0
@@ -378,6 +534,8 @@ def _excel_content_type(filename: str) -> str:
     suffix = Path(filename).suffix.lower()
     if suffix == ".xlsm":
         return "application/vnd.ms-excel.sheet.macroEnabled.12"
+    if suffix == ".xls":
+        return "application/vnd.ms-excel"
     return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
