@@ -437,6 +437,37 @@ def process_tool_result(
 
     tool_result_files = []
 
+    def _normalize_tool_file(file_item):
+        if not isinstance(file_item, dict):
+            return file_item
+        normalized = {**file_item}
+        normalized_id = normalized.get("fileId") or normalized.get("id")
+        if normalized_id:
+            normalized["fileId"] = normalized_id
+            normalized["id"] = normalized_id
+        return normalized
+
+    if isinstance(tool_result, dict):
+        extracted_files = tool_result.get("files")
+        if isinstance(extracted_files, list):
+            normalized_files = [
+                _normalize_tool_file(item)
+                for item in extracted_files
+                if isinstance(item, dict)
+            ]
+            if normalized_files:
+                tool_result_files.extend(normalized_files)
+                tool_result = {k: v for k, v in tool_result.items() if k != "files"}
+                if not tool_result:
+                    tool_result = {
+                        "status": "success",
+                        "code": "files",
+                        "message": (
+                            f"{tool_function_name}: emitted "
+                            f"{len(normalized_files)} file artifact(s)."
+                        ),
+                    }
+
     if isinstance(tool_result, list):
         if tool_type == "mcp":  # MCP
             tool_response = []
@@ -471,6 +502,7 @@ def process_tool_result(
                         )
             tool_result = tool_response[0] if len(tool_response) == 1 else tool_response
         else:  # OpenAPI
+            retained_items = []
             for item in tool_result:
                 if isinstance(item, str) and item.startswith("data:"):
                     tool_result_files.append(
@@ -479,7 +511,14 @@ def process_tool_result(
                             "content": item,
                         }
                     )
-                    tool_result.remove(item)
+                else:
+                    retained_items.append(item)
+            tool_result = retained_items
+
+    tool_result_files = [
+        _normalize_tool_file(item) if isinstance(item, dict) else item
+        for item in tool_result_files
+    ]
 
     if isinstance(tool_result, list):
         tool_result = {"results": tool_result}

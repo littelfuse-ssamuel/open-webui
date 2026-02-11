@@ -645,7 +645,11 @@
 				
 				// Get sheet name from snapshot
 				const sheetData = snapshot.sheets?.[subUnitId];
-				const sheetName = sheetData?.name || 'Sheet1';
+				const sheetName = sheetData?.name;
+				if (!sheetName) {
+					errors.push(`Could not resolve sheet for edited range (${subUnitId})`);
+					return;
+				}
 
 				if (!changesBySheet.has(subUnitId)) {
 					changesBySheet.set(subUnitId, { sheetName, changes: [] });
@@ -663,8 +667,9 @@
 						const saveResponse = await excelCore.saveChanges({
 							fileId: file.fileId!,
 							sheet: sheetName,
-							changes
-						});
+							changes,
+							createSheetIfMissing: true
+						} as any);
 
 						if (saveResponse.status === 'blocked' && saveResponse.qcReport) {
 							qcReport = saveResponse.qcReport;

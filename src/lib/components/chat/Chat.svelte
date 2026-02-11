@@ -412,9 +412,20 @@
 						getContents();
 					}
 				} else if (type === 'chat:message:files' || type === 'files') {
-					const normalizedFiles = Array.isArray(data.files)
+					const incomingFiles = Array.isArray(data.files)
 						? data.files.map((file) => normalizeExcelFileReference(file))
-						: data.files;
+						: [];
+					const existingFiles = Array.isArray(message.files)
+						? message.files.map((file) => normalizeExcelFileReference(file))
+						: [];
+					const mergedByKey = new Map();
+					for (const file of [...existingFiles, ...incomingFiles]) {
+						const fileKey = `${file?.type ?? ''}:${file?.fileId ?? file?.id ?? ''}:${
+							file?.url ?? ''
+						}`;
+						mergedByKey.set(fileKey, file);
+					}
+					const normalizedFiles = Array.from(mergedByKey.values());
 					message.files = normalizedFiles;
 
 					// Auto-open artifact panel for Excel files (like HTML artifacts)

@@ -45,6 +45,11 @@ def test_workbook_load_kwargs_uses_extension():
     assert excel_router._get_workbook_load_kwargs("report.xlsx")["keep_links"] is True
 
 
+def test_coerce_cell_value_normalizes_double_dot_decimal():
+    assert excel_router._coerce_cell_value("0..1") == 0.1
+    assert excel_router._coerce_cell_value("-12..5") == -12.5
+
+
 def test_excel_update_preserves_chart_parts(tmp_path: Path):
     file_path = tmp_path / "chart.xlsx"
     _create_chart_workbook(file_path)
@@ -186,6 +191,51 @@ def test_formula_qc_detects_missing_sheet_reference(tmp_path: Path):
 
     assert repairs_applied == 0
     assert any(i.issueType == "missing_sheet_reference" and i.severity == "critical" for i in issues)
+
+
+def test_formula_qc_detects_placeholder_reference(tmp_path: Path):
+    file_path = tmp_path / "qc_placeholder_ref.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws["A1"] = "=BraytonCycle!F??"
+    wb.save(file_path)
+    wb.close()
+
+    wb2 = openpyxl.load_workbook(file_path, data_only=False)
+    issues, repairs_applied = excel_router._run_formula_qc_and_repairs(wb2)
+    wb2.close()
+
+    assert repairs_applied == 0
+    assert any(
+        i.issueType == "placeholder_reference" and i.severity == "critical"
+        for i in issues
+    )
+
+
+def test_formula_qc_detects_broken_scatter_chart_series():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+
+    class _FakeSeries:
+        xVal = None
+        yVal = None
+        val = None
+
+    class ScatterChart:
+        def __init__(self):
+            self.series = [_FakeSeries()]
+
+    ws._charts = [ScatterChart()]
+    issues, repairs_applied = excel_router._run_formula_qc_and_repairs(wb)
+    wb.close()
+
+    assert repairs_applied == 0
+    assert any(
+        i.issueType == "broken_chart_series" and i.severity == "critical"
+        for i in issues
+    )
 
 
 def test_build_qc_report_blocks_on_critical():
@@ -418,6 +468,46 @@ def test_should_block_on_qc_respects_rollout_flag():
     assert excel_router._should_block_on_qc(qc_report, block_on_critical_qc=False) is False
 
 
+def test_update_excel_file_creates_sheet_when_enabled(tmp_path: Path, monkeypatch):
+    file_path = tmp_path / "create_sheet.xlsx"
+    _create_basic_workbook(file_path)
+
+    file_record = type(
+        "FileRecord",
+        (),
+        {
+            "id": "file-1",
+            "user_id": "user-1",
+            "path": "storage-path",
+            "filename": "create_sheet.xlsx",
+        },
+    )()
+    user = type("User", (), {"id": "user-1", "role": "user"})()
+
+    monkeypatch.setattr(excel_router.Files, "get_file_by_id", lambda _id: file_record)
+    monkeypatch.setattr(excel_router.Storage, "get_file", lambda _path: str(file_path))
+    monkeypatch.setattr(
+        excel_router.Files,
+        "update_file_metadata_by_id",
+        lambda _id, _meta: {"id": _id},
+    )
+
+    req = excel_router.ExcelUpdateRequest(
+        fileId="file-1",
+        sheet="NewSheet",
+        changes=[excel_router.CellChange(row=1, col=1, value=42, isFormula=False)],
+        createSheetIfMissing=True,
+    )
+
+    res = asyncio.run(excel_router.update_excel_file(req, user=user))
+
+    assert res.status == "ok"
+    wb = openpyxl.load_workbook(file_path, data_only=False)
+    assert "NewSheet" in wb.sheetnames
+    assert wb["NewSheet"]["A1"].value == 42
+    wb.close()
+
+
 def test_update_request_supports_snake_case_rollout_aliases():
     req = excel_router.ExcelUpdateRequest(
         fileId="file-1",
@@ -431,6 +521,8 @@ def test_update_request_supports_snake_case_rollout_aliases():
         allow_formula_overwrite=True,
         blockOnCriticalQc=True,
         block_on_critical_qc=False,
+        createSheetIfMissing=False,
+        create_sheet_if_missing=True,
     )
 
     assert excel_router._resolve_rollout_bool(
@@ -445,3 +537,6 @@ def test_update_request_supports_snake_case_rollout_aliases():
     assert excel_router._resolve_rollout_bool(
         req.blockOnCriticalQc, req.block_on_critical_qc, True
     ) is False
+    assert excel_router._resolve_rollout_bool(
+        req.createSheetIfMissing, req.create_sheet_if_missing, False
+    ) is True

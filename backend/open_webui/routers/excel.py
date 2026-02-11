@@ -88,6 +88,9 @@ def _coerce_cell_value(value: Any) -> Any:
     if stripped == "":
         return value
 
+    if re.fullmatch(r"-?\d+\.\.\d+", stripped):
+        stripped = stripped.replace("..", ".", 1)
+
     try:
         if "." in stripped:
             return float(stripped)
@@ -250,12 +253,14 @@ class ExcelUpdateRequest(BaseModel):
     blockReferencedByFormula: Optional[bool] = True
     allowFormulaOverwrite: Optional[bool] = False
     blockOnCriticalQc: Optional[bool] = True
+    createSheetIfMissing: Optional[bool] = False
 
     # Compatibility aliases for snake_case clients.
     strict_formula_mode: Optional[bool] = None
     block_referenced_by_formula: Optional[bool] = None
     allow_formula_overwrite: Optional[bool] = None
     block_on_critical_qc: Optional[bool] = None
+    create_sheet_if_missing: Optional[bool] = None
 
 
 class ExcelUpdateResponse(BaseModel):
@@ -326,20 +331,32 @@ def _build_qc_report(issues: list[ExcelQcIssue], operation: str) -> ExcelQcRepor
         if blocked
         else "No blocking quality issues detected"
     )
+    issue_types = {i.issueType for i in issues}
+    recommended_actions: list[str] = []
+    if blocked:
+        recommended_actions = [
+            "Review impacted formulas and referenced ranges before retrying.",
+            "Fix invalid references (#REF!, #NAME?, #VALUE!) in the listed cells.",
+            f"Retry the {operation} after correcting the workbook formulas.",
+        ]
+        if "placeholder_reference" in issue_types:
+            recommended_actions.append(
+                "Replace placeholder references (for example, F??) with real cell addresses."
+            )
+        if "ghost_cell_reference" in issue_types:
+            recommended_actions.append(
+                "Populate or relink blank source cells that have no descriptor context."
+            )
+        if "broken_chart_series" in issue_types:
+            recommended_actions.append(
+                "Repair chart series bindings so each chart has valid source ranges."
+            )
     return ExcelQcReport(
         blocked=blocked,
         blockReason=reason,
         criticalUnresolved=len(critical),
         issues=issues[:50],
-        recommendedActions=(
-            [
-                "Review impacted formulas and referenced ranges before retrying.",
-                "Fix invalid references (#REF!, #NAME?, #VALUE!) in the listed cells.",
-                f"Retry the {operation} after correcting the workbook formulas.",
-            ]
-            if blocked
-            else []
-        ),
+        recommendedActions=recommended_actions,
     )
 
 
@@ -415,8 +432,71 @@ def _update_excel_file_metadata(
 def _run_formula_qc_and_repairs(wb) -> tuple[list[ExcelQcIssue], int]:
     issues: list[ExcelQcIssue] = []
     invalid_token_re = re.compile(r"#REF!|#NAME\?|#VALUE!", re.IGNORECASE)
+    placeholder_ref_re = re.compile(
+        r"(?:'[^']+'!|[A-Za-z0-9_]+!)?\$?[A-Z]{1,3}\?\?", re.IGNORECASE
+    )
     repairs_applied = 0
     sheets_by_lower = {sheet.lower(): sheet for sheet in wb.sheetnames}
+
+    def _split_top_level_csv(expr: str) -> list[str]:
+        tokens: list[str] = []
+        buf: list[str] = []
+        paren_depth = 0
+        brace_depth = 0
+        in_single = False
+        in_double = False
+
+        for ch in expr:
+            if ch == "'" and not in_double:
+                in_single = not in_single
+                buf.append(ch)
+                continue
+            if ch == '"' and not in_single:
+                in_double = not in_double
+                buf.append(ch)
+                continue
+
+            if not in_single and not in_double:
+                if ch == "(":
+                    paren_depth += 1
+                elif ch == ")" and paren_depth > 0:
+                    paren_depth -= 1
+                elif ch == "{":
+                    brace_depth += 1
+                elif ch == "}" and brace_depth > 0:
+                    brace_depth -= 1
+                elif ch == "," and paren_depth == 0 and brace_depth == 0:
+                    token = "".join(buf).strip()
+                    if token:
+                        tokens.append(token)
+                    buf = []
+                    continue
+
+            buf.append(ch)
+
+        tail = "".join(buf).strip()
+        if tail:
+            tokens.append(tail)
+        return tokens
+
+    def _extract_let_local_names(formula: str) -> set[str]:
+        formula_upper = formula.upper()
+        if not formula_upper.startswith("=LET("):
+            return set()
+        if not formula.endswith(")"):
+            return set()
+
+        inner = formula[5:-1]
+        parts = _split_top_level_csv(inner)
+        if len(parts) < 3:
+            return set()
+
+        names: set[str] = set()
+        for idx in range(0, len(parts) - 1, 2):
+            candidate = parts[idx].strip()
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", candidate):
+                names.add(candidate.upper())
+        return names
 
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
@@ -460,15 +540,59 @@ def _run_formula_qc_and_repairs(wb) -> tuple[list[ExcelQcIssue], int]:
                         )
                     )
 
+                if placeholder_ref_re.search(repaired_formula):
+                    issues.append(
+                        ExcelQcIssue(
+                            sheet=sheet_name,
+                            cell=f"{get_column_letter(cell.column)}{cell.row}",
+                            severity="critical",
+                            issueType="placeholder_reference",
+                            message=(
+                                "Formula contains placeholder cell references "
+                                "(for example, F??) that must be replaced."
+                            ),
+                            originalFormula=formula,
+                            repairedFormula=repaired_formula if repaired else None,
+                        )
+                    )
+
                 refs = _parse_cell_references_from_formula(repaired_formula)
                 missing_sheets = set()
+                let_local_names = _extract_let_local_names(repaired_formula)
+                checked_ref_count = 0
+                ghost_ref_hits = 0
+                ghost_ref_cells: set[str] = set()
                 for ref in refs:
-                    if "!" not in ref:
-                        continue
-                    referenced_sheet, _ = ref.split("!", 1)
+                    referenced_sheet, referenced_range = _split_sheet_and_range(
+                        ref, sheet_name
+                    )
                     normalized_sheet = _normalize_sheet_name(referenced_sheet)
-                    if normalized_sheet.lower() not in sheets_by_lower:
+                    resolved_sheet_name = sheets_by_lower.get(normalized_sheet.lower())
+                    if not resolved_sheet_name:
                         missing_sheets.add(normalized_sheet)
+                        continue
+
+                    if "!" not in ref and ":" not in referenced_range:
+                        local_candidate = referenced_range.replace("$", "").upper()
+                        if local_candidate in let_local_names:
+                            continue
+
+                    referenced_ws = wb[resolved_sheet_name]
+                    for expanded_addr in _expand_range(referenced_range):
+                        clean_addr = expanded_addr.replace("$", "")
+                        if not re.fullmatch(r"[A-Z]{1,3}[1-9]\d*", clean_addr):
+                            continue
+
+                        checked_ref_count += 1
+                        ref_cell = referenced_ws[clean_addr]
+                        if ref_cell.value not in (None, ""):
+                            continue
+
+                        row_label = referenced_ws.cell(row=ref_cell.row, column=1).value
+                        row_notes = referenced_ws.cell(row=ref_cell.row, column=4).value
+                        if row_label in (None, "") and row_notes in (None, ""):
+                            ghost_ref_hits += 1
+                            ghost_ref_cells.add(f"{resolved_sheet_name}!{clean_addr}")
 
                 for missing_sheet in sorted(missing_sheets):
                     issues.append(
@@ -480,6 +604,29 @@ def _run_formula_qc_and_repairs(wb) -> tuple[list[ExcelQcIssue], int]:
                             message=(
                                 "Formula references a sheet that does not exist: "
                                 f"'{missing_sheet}'."
+                            ),
+                            originalFormula=formula,
+                            repairedFormula=repaired_formula if repaired else None,
+                        )
+                    )
+
+                if ghost_ref_cells:
+                    ghost_cells = sorted(ghost_ref_cells)
+                    ghost_preview = ", ".join(ghost_cells[:5])
+                    ghost_severity = (
+                        "critical"
+                        if checked_ref_count > 0 and ghost_ref_hits == checked_ref_count
+                        else "warning"
+                    )
+                    issues.append(
+                        ExcelQcIssue(
+                            sheet=sheet_name,
+                            cell=f"{get_column_letter(cell.column)}{cell.row}",
+                            severity=ghost_severity,
+                            issueType="ghost_cell_reference",
+                            message=(
+                                "Formula references blank source cells without descriptor "
+                                f"context: {ghost_preview}"
                             ),
                             originalFormula=formula,
                             repairedFormula=repaired_formula if repaired else None,
@@ -498,6 +645,51 @@ def _run_formula_qc_and_repairs(wb) -> tuple[list[ExcelQcIssue], int]:
                             message="Auto-repaired malformed formula prefix.",
                             originalFormula=formula,
                             repairedFormula=repaired_formula,
+                        )
+                    )
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        charts = list(getattr(ws, "_charts", []) or [])
+        for chart_index, chart in enumerate(charts, start=1):
+            chart_type = chart.__class__.__name__
+            series_list = list(getattr(chart, "series", []) or [])
+            for series_index, series in enumerate(series_list, start=1):
+                broken_series = False
+                message = ""
+
+                if chart_type == "ScatterChart":
+                    x_val = getattr(series, "xVal", None)
+                    y_val = getattr(series, "yVal", None)
+                    has_x = bool(
+                        getattr(x_val, "numRef", None) or getattr(x_val, "numLit", None)
+                    )
+                    has_y = bool(
+                        getattr(y_val, "numRef", None) or getattr(y_val, "numLit", None)
+                    )
+                    if not (has_x and has_y):
+                        broken_series = True
+                        message = (
+                            "Scatter chart series is missing X and/or Y range references."
+                        )
+                else:
+                    values = getattr(series, "val", None)
+                    has_values = bool(
+                        getattr(values, "numRef", None)
+                        or getattr(values, "numLit", None)
+                    )
+                    if not has_values:
+                        broken_series = True
+                        message = "Chart series is missing value range references."
+
+                if broken_series:
+                    issues.append(
+                        ExcelQcIssue(
+                            sheet=sheet_name,
+                            cell=f"chart[{chart_index}].series[{series_index}]",
+                            severity="critical",
+                            issueType="broken_chart_series",
+                            message=message,
                         )
                     )
 
@@ -591,6 +783,11 @@ async def update_excel_file(
             request.block_on_critical_qc,
             True,
         )
+        create_sheet_if_missing = _resolve_rollout_bool(
+            request.createSheetIfMissing,
+            request.create_sheet_if_missing,
+            False,
+        )
 
         try:
             lock = await _get_excel_file_lock(request.fileId)
@@ -600,12 +797,33 @@ async def update_excel_file(
                     load_kwargs = _get_workbook_load_kwargs(file.filename)
                     wb = openpyxl.load_workbook(file_path, **load_kwargs)
 
-                    if request.sheet not in wb.sheetnames:
-                        raise ValueError(f"Sheet '{request.sheet}' not found in workbook.")
+                    requested_sheet_name = _normalize_sheet_name(request.sheet)
+                    resolved_sheet_name = None
+
+                    if requested_sheet_name in wb.sheetnames:
+                        resolved_sheet_name = requested_sheet_name
+                    else:
+                        requested_sheet_lower = requested_sheet_name.lower()
+                        for existing_sheet_name in wb.sheetnames:
+                            if (
+                                _normalize_sheet_name(existing_sheet_name).lower()
+                                == requested_sheet_lower
+                            ):
+                                resolved_sheet_name = existing_sheet_name
+                                break
+
+                    if resolved_sheet_name is None and create_sheet_if_missing:
+                        ws = wb.create_sheet(title=requested_sheet_name or "Sheet1")
+                        resolved_sheet_name = ws.title
+
+                    if resolved_sheet_name is None:
+                        raise ValueError(
+                            f"Sheet '{request.sheet}' not found in workbook."
+                        )
 
                     preflight_warnings = _collect_preflight_warnings(
                         wb=wb,
-                        sheet_name=request.sheet,
+                        sheet_name=resolved_sheet_name,
                         changes=request.changes,
                     )
                     preflight_report = _build_preflight_report(
@@ -622,7 +840,7 @@ async def update_excel_file(
                             preflightReport=preflight_report,
                         )
 
-                    ws = wb[request.sheet]
+                    ws = wb[resolved_sheet_name]
                     changes_applied = _apply_worksheet_changes(ws, request.changes)
 
                     qc_issues, repairs_applied = _run_formula_qc_and_repairs(wb)
