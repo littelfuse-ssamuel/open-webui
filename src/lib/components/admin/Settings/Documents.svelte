@@ -237,20 +237,20 @@
 		const embeddingConfig = await getEmbeddingConfig(localStorage.token);
 
 		if (embeddingConfig) {
-			RAG_EMBEDDING_ENGINE = embeddingConfig.RAG_EMBEDDING_ENGINE;
-			RAG_EMBEDDING_MODEL = embeddingConfig.RAG_EMBEDDING_MODEL;
+			RAG_EMBEDDING_ENGINE = embeddingConfig.RAG_EMBEDDING_ENGINE ?? '';
+			RAG_EMBEDDING_MODEL = embeddingConfig.RAG_EMBEDDING_MODEL ?? '';
 			RAG_EMBEDDING_BATCH_SIZE = embeddingConfig.RAG_EMBEDDING_BATCH_SIZE ?? 1;
 			ENABLE_ASYNC_EMBEDDING = embeddingConfig.ENABLE_ASYNC_EMBEDDING ?? true;
 
-			OpenAIKey = embeddingConfig.openai_config.key;
-			OpenAIUrl = embeddingConfig.openai_config.url;
+			OpenAIKey = embeddingConfig.openai_config?.key ?? '';
+			OpenAIUrl = embeddingConfig.openai_config?.url ?? '';
 
-			OllamaKey = embeddingConfig.ollama_config.key;
-			OllamaUrl = embeddingConfig.ollama_config.url;
+			OllamaKey = embeddingConfig.ollama_config?.key ?? '';
+			OllamaUrl = embeddingConfig.ollama_config?.url ?? '';
 
-			AzureOpenAIKey = embeddingConfig.azure_openai_config.key;
-			AzureOpenAIUrl = embeddingConfig.azure_openai_config.url;
-			AzureOpenAIVersion = embeddingConfig.azure_openai_config.version;
+			AzureOpenAIKey = embeddingConfig.azure_openai_config?.key ?? '';
+			AzureOpenAIUrl = embeddingConfig.azure_openai_config?.url ?? '';
+			AzureOpenAIVersion = embeddingConfig.azure_openai_config?.version ?? '';
 		}
 	};
 	onMount(async () => {
