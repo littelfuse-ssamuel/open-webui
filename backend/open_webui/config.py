@@ -959,6 +959,21 @@ PPTX_TEMP_DIR = os.environ.get("PPTX_TEMP_DIR", "/tmp/pptx_files")
 PPTX_FILE_TTL = int(os.environ.get("PPTX_FILE_TTL", "3600"))
 
 ####################################
+# ARTIFACT DELEGATION TOOL FLAGS
+####################################
+
+# REFACTOR_TOUCHPOINT[OWUI_DELEGATION_PHASE0]: owner=open-webui; intent=gate delegated artifact tool activation by environment flags; fallback=keep current artifact pipeline behavior.
+ENABLE_EXCEL_ARTIFACT_TOOLS = (
+    os.environ.get("ENABLE_EXCEL_ARTIFACT_TOOLS", "False").lower() == "true"
+)
+ENABLE_DFMEA_ARTIFACT_TOOLS = (
+    os.environ.get("ENABLE_DFMEA_ARTIFACT_TOOLS", "False").lower() == "true"
+)
+ENABLE_PPTX_ARTIFACT_TOOLS = (
+    os.environ.get("ENABLE_PPTX_ARTIFACT_TOOLS", "False").lower() == "true"
+)
+
+####################################
 # File Upload DIR
 ####################################
 

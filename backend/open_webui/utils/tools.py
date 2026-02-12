@@ -40,7 +40,12 @@ from open_webui.models.users import UserModel
 from open_webui.models.groups import Groups
 from open_webui.utils.plugin import load_tool_module_by_id
 from open_webui.utils.access_control import has_access
-from open_webui.config import BYPASS_ADMIN_ACCESS_CONTROL
+from open_webui.config import (
+    BYPASS_ADMIN_ACCESS_CONTROL,
+    ENABLE_EXCEL_ARTIFACT_TOOLS,
+    ENABLE_DFMEA_ARTIFACT_TOOLS,
+    ENABLE_PPTX_ARTIFACT_TOOLS,
+)
 from open_webui.env import (
     AIOHTTP_CLIENT_TIMEOUT,
     AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER_DATA,
@@ -49,6 +54,9 @@ from open_webui.env import (
 from open_webui.tools.builtin import (
     search_web,
     fetch_url,
+    generate_excel_artifact,
+    generate_dfmea_artifact,
+    generate_pptx_artifact,
     generate_image,
     edit_image,
     search_memories,
@@ -448,6 +456,27 @@ def get_builtin_tools(
         request.app.state.config, "ENABLE_IMAGE_EDIT", False
     ) and get_model_capability("image_generation"):
         builtin_functions.append(edit_image)
+
+    # REFACTOR_TOUCHPOINT[OWUI_DELEGATION_PHASE1]: owner=open-webui; intent=register delegated artifact built-in tools behind runtime flags; fallback=do not expose delegation tools.
+    # Add delegated artifact generation tools when explicitly enabled
+    if getattr(
+        request.app.state.config,
+        "ENABLE_EXCEL_ARTIFACT_TOOLS",
+        ENABLE_EXCEL_ARTIFACT_TOOLS,
+    ):
+        builtin_functions.append(generate_excel_artifact)
+    if getattr(
+        request.app.state.config,
+        "ENABLE_DFMEA_ARTIFACT_TOOLS",
+        ENABLE_DFMEA_ARTIFACT_TOOLS,
+    ):
+        builtin_functions.append(generate_dfmea_artifact)
+    if getattr(
+        request.app.state.config,
+        "ENABLE_PPTX_ARTIFACT_TOOLS",
+        ENABLE_PPTX_ARTIFACT_TOOLS,
+    ):
+        builtin_functions.append(generate_pptx_artifact)
 
     # Notes tools - search, view, create, and update user's notes (if notes enabled globally)
     if getattr(request.app.state.config, "ENABLE_NOTES", False):

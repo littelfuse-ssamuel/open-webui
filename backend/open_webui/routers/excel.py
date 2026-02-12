@@ -342,6 +342,7 @@ def _normalize_generated_excel_filename(raw_filename: Optional[str], template: s
     return raw_filename
 
 
+# REFACTOR_TOUCHPOINT[OWUI_DELEGATION_PHASE0]: owner=open-webui; intent=preserve canonical excel artifact storage/linking contract for delegated generation; fallback=use existing excel router generation path.
 @router.post("/generate", response_model=ExcelGenerateResponse)
 async def generate_excel_file(
     request: ExcelGenerateRequest,

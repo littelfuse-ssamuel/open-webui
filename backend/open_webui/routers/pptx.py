@@ -199,6 +199,7 @@ def create_pptx_file_record(
 # API Endpoints
 # ================================
 
+# REFACTOR_TOUCHPOINT[OWUI_DELEGATION_PHASE0]: owner=open-webui; intent=preserve canonical pptx artifact storage/linking contract for delegated generation; fallback=use existing pptx router generation path.
 @router.post("/generate", response_model=PptxGenerateResponse)
 async def generate_pptx(
     request: Request,

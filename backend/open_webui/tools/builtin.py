@@ -10,11 +10,24 @@ import json
 import logging
 import time
 import asyncio
-from typing import Optional
+import io
+import re
+import uuid
+from datetime import datetime
+from typing import Any, Optional
 
 from fastapi import Request
 
+from open_webui.config import (
+    ENABLE_DFMEA_ARTIFACT_TOOLS,
+    ENABLE_EXCEL_ARTIFACT_TOOLS,
+    ENABLE_PPTX_ARTIFACT_TOOLS,
+)
+from open_webui.excel.dfmea_formatter import build_dfmea_workbook_bytes
+from open_webui.excel.generation_spec import ExcelGenerateRequest
+from open_webui.models.files import FileForm, Files
 from open_webui.models.users import UserModel
+from open_webui.routers.excel import generate_excel_file
 from open_webui.routers.retrieval import search_web as _search_web
 from open_webui.retrieval.utils import get_content_from_url
 from open_webui.routers.images import (
@@ -31,15 +44,133 @@ from open_webui.routers.memories import (
     AddMemoryForm,
     MemoryUpdateModel,
 )
+from open_webui.routers.pptx import PptxGenerateRequest, generate_pptx
 from open_webui.models.notes import Notes
 from open_webui.models.chats import Chats
 from open_webui.models.channels import Channels, ChannelMember, Channel
 from open_webui.models.messages import Messages, Message
 from open_webui.models.groups import Groups
+from open_webui.storage.provider import Storage
 
 log = logging.getLogger(__name__)
 
 MAX_KNOWLEDGE_BASE_SEARCH_ITEMS = 10_000
+
+# REFACTOR_TOUCHPOINT[OWUI_DELEGATION_PHASE0]: owner=open-webui; intent=add built-in delegated artifact tools (excel/dfmea/pptx) in this module; fallback=continue existing non-delegated tool set.
+
+
+def _tool_flag_enabled(request: Request, flag_name: str, fallback: bool) -> bool:
+    """
+    Resolve runtime tool flags from app config when available, otherwise fallback
+    to module-level defaults from environment.
+    """
+    if request is None:
+        return bool(fallback)
+
+    config = getattr(getattr(getattr(request, "app", None), "state", None), "config", None)
+    if config is None:
+        return bool(fallback)
+
+    value = getattr(config, flag_name, fallback)
+    if hasattr(value, "value"):
+        value = value.value
+    return bool(value)
+
+
+def _normalize_excel_filename(filename: Optional[str], default_prefix: str) -> str:
+    if filename:
+        safe = re.sub(r"[^A-Za-z0-9._\- ]+", "", filename).strip()
+        if safe:
+            filename = safe
+    if not filename:
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        filename = f"{default_prefix}_{ts}.xlsx"
+    if not filename.lower().endswith((".xlsx", ".xlsm", ".xls")):
+        filename = f"{filename}.xlsx"
+    return filename
+
+
+def _attach_artifact_to_message(
+    artifact: dict[str, Any], chat_id: Optional[str], message_id: Optional[str]
+) -> list[dict[str, Any]]:
+    if not chat_id or not message_id:
+        return [artifact]
+
+    message_files = Chats.add_message_files_by_id_and_message_id(
+        chat_id,
+        message_id,
+        [artifact],
+    )
+    return message_files or [artifact]
+
+
+async def _emit_artifact_files_event(
+    event_emitter: Optional[callable], files: list[dict[str, Any]]
+) -> None:
+    if not event_emitter or not files:
+        return
+
+    try:
+        await event_emitter(
+            {
+                "type": "files",
+                "data": {
+                    "files": files,
+                },
+            }
+        )
+    except Exception as e:
+        log.exception(f"Failed to emit files event for artifacts: {e}")
+
+
+def _extract_dfmea_seed_requirements(prompt: str, limit: int = 25) -> list[str]:
+    rows: list[str] = []
+    for raw_line in prompt.splitlines():
+        line = raw_line.strip(" \t-*")
+        if line:
+            rows.append(line)
+
+    if not rows:
+        for part in prompt.split(";"):
+            line = part.strip()
+            if line:
+                rows.append(line)
+
+    unique_rows: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        normalized = row.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_rows.append(row)
+        if len(unique_rows) >= limit:
+            break
+
+    if unique_rows:
+        return unique_rows
+
+    compact = " ".join(prompt.split())
+    return [compact] if compact else ["Generated from prompt context"]
+
+
+def _build_dfmea_seed_records(prompt: str) -> list[dict[str, Any]]:
+    requirements = _extract_dfmea_seed_requirements(prompt)
+    records: list[dict[str, Any]] = []
+
+    for idx, requirement in enumerate(requirements):
+        item_function = "System Function" if idx == 0 else ""
+        records.append(
+            {
+                "Item / Function": item_function,
+                "Item Functions": item_function,
+                "Requirement": requirement,
+                "Potential Failure Modes": "Potential failure mode to be refined",
+                "Potential Effect(s) of Failure": "Potential customer/system impact",
+            }
+        )
+
+    return records
 
 # =============================================================================
 # TIME UTILITIES
@@ -338,6 +469,296 @@ async def edit_image(
         return json.dumps({"status": "success", "images": images}, ensure_ascii=False)
     except Exception as e:
         log.exception(f"edit_image error: {e}")
+        return json.dumps({"error": str(e)})
+
+
+# =============================================================================
+# ARTIFACT GENERATION TOOLS
+# =============================================================================
+
+
+async def generate_excel_artifact(
+    prompt: str,
+    template: str = "executive_dashboard",
+    filename: Optional[str] = None,
+    include_sample_data: bool = True,
+    include_charts: bool = True,
+    max_rows_per_sheet: int = 20,
+    max_refinement_iterations: int = 2,
+    minimum_visual_score: float = 0.78,
+    block_on_critical_qc: bool = True,
+    __request__: Request = None,
+    __user__: dict = None,
+    __event_emitter__: callable = None,
+    __chat_id__: str = None,
+    __message_id__: str = None,
+) -> str:
+    """
+    Generate an Excel artifact and attach it to the current chat message.
+
+    :param prompt: Workbook generation prompt
+    :param template: Excel template variant to use
+    :param filename: Optional output filename
+    :param include_sample_data: Include generated sample data
+    :param include_charts: Include charts where applicable
+    :param max_rows_per_sheet: Max generated rows per sheet
+    :param max_refinement_iterations: Max quality-refinement passes
+    :param minimum_visual_score: Minimum visual quality score target (0.0-1.0)
+    :param block_on_critical_qc: Block file creation when critical QC fails
+    :return: Compact JSON status with file metadata
+    """
+    # REFACTOR_TOUCHPOINT[OWUI_DELEGATION_PHASE1]: owner=open-webui; intent=excel artifact built-in tool that persists file records, links message files, and emits file events; fallback=return compact error and keep legacy/non-delegated generation path.
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    if not __user__:
+        return json.dumps({"error": "User context not available"})
+
+    if not _tool_flag_enabled(
+        __request__,
+        "ENABLE_EXCEL_ARTIFACT_TOOLS",
+        ENABLE_EXCEL_ARTIFACT_TOOLS,
+    ):
+        return json.dumps({"error": "Excel artifact tools are disabled"})
+
+    try:
+        user = UserModel(**__user__)
+        form_data = ExcelGenerateRequest(
+            prompt=prompt,
+            template=template,
+            filename=filename,
+            include_sample_data=include_sample_data,
+            include_charts=include_charts,
+            max_rows_per_sheet=max_rows_per_sheet,
+            max_refinement_iterations=max_refinement_iterations,
+            minimum_visual_score=minimum_visual_score,
+            block_on_critical_qc=block_on_critical_qc,
+        )
+        result = await generate_excel_file(request=form_data, user=user)
+
+        if result.status != "ok" or not result.fileId:
+            return json.dumps(
+                {
+                    "status": result.status,
+                    "message": result.message,
+                },
+                ensure_ascii=False,
+            )
+
+        artifact = result.artifact or {
+            "type": "excel",
+            "url": result.downloadUrl,
+            "name": filename or "generated_workbook.xlsx",
+            "fileId": result.fileId,
+            "meta": {},
+        }
+
+        message_files = _attach_artifact_to_message(artifact, __chat_id__, __message_id__)
+        await _emit_artifact_files_event(__event_emitter__, message_files)
+
+        return json.dumps(
+            {
+                "status": "success",
+                "message": "Excel artifact generated and attached to chat",
+                "fileId": result.fileId,
+                "downloadUrl": result.downloadUrl,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        log.exception(f"generate_excel_artifact error: {e}")
+        return json.dumps({"error": str(e)})
+
+
+async def generate_dfmea_artifact(
+    prompt: str,
+    template_name: str = "littelfuse",
+    filename: Optional[str] = None,
+    __request__: Request = None,
+    __user__: dict = None,
+    __event_emitter__: callable = None,
+    __chat_id__: str = None,
+    __message_id__: str = None,
+) -> str:
+    """
+    Generate a DFMEA-formatted Excel artifact and attach it to the current chat.
+
+    :param prompt: DFMEA source context used to seed worksheet rows
+    :param template_name: Template variant name (`littelfuse` or `carling`)
+    :param filename: Optional output filename
+    :return: Compact JSON status with file metadata
+    """
+    # REFACTOR_TOUCHPOINT[OWUI_DELEGATION_PHASE1]: owner=open-webui; intent=dfmea artifact built-in tool that creates workbook bytes and persists through Storage+Files; fallback=return compact error and defer to legacy DFMEA flow.
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    if not __user__:
+        return json.dumps({"error": "User context not available"})
+
+    if not _tool_flag_enabled(
+        __request__,
+        "ENABLE_DFMEA_ARTIFACT_TOOLS",
+        ENABLE_DFMEA_ARTIFACT_TOOLS,
+    ):
+        return json.dumps({"error": "DFMEA artifact tools are disabled"})
+
+    try:
+        user = UserModel(**__user__)
+        normalized_template = (
+            "carling" if (template_name or "").strip().lower() == "carling" else "littelfuse"
+        )
+        output_filename = _normalize_excel_filename(
+            filename, f"DFMEA_{normalized_template}"
+        )
+
+        # REFACTOR_TOUCHPOINT[OWUI_DELEGATION_PHASE2]: owner=open-webui; intent=use LF-format DFMEA workbook builder for littelfuse/carling parity; fallback=return compact error and keep previous simplified formatter path disabled.
+        seed_records = _build_dfmea_seed_records(prompt)
+        payload = build_dfmea_workbook_bytes(
+            records=seed_records,
+            template_name=normalized_template,
+        )
+        with io.BytesIO(payload) as handle:
+            _, stored_path = Storage.upload_file(handle, output_filename, {})
+
+        file_id = str(uuid.uuid4())
+        meta = {
+            "name": output_filename,
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "size": len(payload),
+            "created_at": datetime.utcnow().isoformat(),
+            "sheetNames": ["DFMEA"],
+            "activeSheet": "DFMEA",
+            "dfmea_template": normalized_template,
+            "generator": "builtin.generate_dfmea_artifact",
+        }
+
+        file_form = FileForm(
+            id=file_id,
+            filename=output_filename,
+            path=stored_path,
+            meta=meta,
+            data={"status": "completed"},
+        )
+        file_model = Files.insert_new_file(user.id, file_form)
+        if not file_model:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": "Failed to persist DFMEA artifact metadata",
+                },
+                ensure_ascii=False,
+            )
+
+        download_url = f"/api/v1/files/{file_model.id}/content"
+        artifact = {
+            "type": "excel",
+            "url": download_url,
+            "name": output_filename,
+            "fileId": str(file_model.id),
+            "meta": {
+                "sheetNames": ["DFMEA"],
+                "activeSheet": "DFMEA",
+                "content_type": meta["content_type"],
+                "dfmea_template": normalized_template,
+            },
+        }
+
+        message_files = _attach_artifact_to_message(artifact, __chat_id__, __message_id__)
+        await _emit_artifact_files_event(__event_emitter__, message_files)
+
+        return json.dumps(
+            {
+                "status": "success",
+                "message": "DFMEA artifact generated and attached to chat",
+                "fileId": str(file_model.id),
+                "downloadUrl": download_url,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        log.exception(f"generate_dfmea_artifact error: {e}")
+        return json.dumps({"error": str(e)})
+
+
+async def generate_pptx_artifact(
+    title: str,
+    slides: list[dict[str, Any]],
+    use_template: bool = True,
+    __request__: Request = None,
+    __user__: dict = None,
+    __event_emitter__: callable = None,
+    __chat_id__: str = None,
+    __message_id__: str = None,
+) -> str:
+    """
+    Generate a PPTX artifact and attach it to the current chat message.
+
+    :param title: Presentation title
+    :param slides: Structured slide payload
+    :param use_template: Whether to apply configured template styling
+    :return: Compact JSON status with file metadata
+    """
+    # REFACTOR_TOUCHPOINT[OWUI_DELEGATION_PHASE1]: owner=open-webui; intent=pptx artifact built-in tool that delegates to pptx router and emits canonical files events; fallback=return compact error and keep existing pptx generation surfaces.
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    if not __user__:
+        return json.dumps({"error": "User context not available"})
+
+    if not _tool_flag_enabled(
+        __request__,
+        "ENABLE_PPTX_ARTIFACT_TOOLS",
+        ENABLE_PPTX_ARTIFACT_TOOLS,
+    ):
+        return json.dumps({"error": "PPTX artifact tools are disabled"})
+
+    try:
+        user = UserModel(**__user__)
+        form_data = PptxGenerateRequest(
+            title=title,
+            slides=slides,
+            use_template=use_template,
+        )
+        result = await generate_pptx(
+            request=__request__,
+            form_data=form_data,
+            user=user,
+        )
+
+        if not result.success or not result.file_id:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": result.message or "Failed to generate PPTX artifact",
+                },
+                ensure_ascii=False,
+            )
+
+        artifact = {
+            "type": "pptx",
+            "url": result.download_url,
+            "name": result.filename,
+            "fileId": result.file_id,
+            "meta": {
+                "slide_count": result.slide_count,
+                "content_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            },
+        }
+
+        message_files = _attach_artifact_to_message(artifact, __chat_id__, __message_id__)
+        await _emit_artifact_files_event(__event_emitter__, message_files)
+
+        return json.dumps(
+            {
+                "status": "success",
+                "message": "PPTX artifact generated and attached to chat",
+                "fileId": result.file_id,
+                "downloadUrl": result.download_url,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        log.exception(f"generate_pptx_artifact error: {e}")
         return json.dumps({"error": str(e)})
 
 
