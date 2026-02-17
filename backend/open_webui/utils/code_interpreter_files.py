@@ -69,8 +69,7 @@ def generate_file_access_preamble(
     preamble = f'''
 # ============================================================
 # AUTO-INJECTED FILE ACCESS PREAMBLE
-# Downloaded files are available in the FILES dictionary
-# Example: pd.read_excel(FILES['MyFile.xlsx'])
+# Downloaded files are available in the FILES dictionary.
 # ============================================================
 import os as _os
 import requests as _requests
@@ -102,13 +101,26 @@ for _file_id, _file_name in _files_to_download:
             _f.write(_response.content)
         
         FILES[_file_name] = _file_path
-        print(f"[File Loaded] {{_file_name}} -> {{_file_path}}")
+        print(f"[File Loaded] {{_file_name}}")
     except Exception as _e:
         print(f"[File Download Error] {{_file_name}}: {{_e}}")
 
 # Clean up temporary variables (keep FILES and cleanup utilities)
-del _file_id, _file_name, _download_url, _headers, _response, _safe_name, _file_path, _f
-del _files_to_download, _FILE_DOWNLOAD_TOKEN, _WEBUI_URL
+for _tmp_var in [
+    "_file_id",
+    "_file_name",
+    "_download_url",
+    "_headers",
+    "_response",
+    "_safe_name",
+    "_file_path",
+    "_f",
+    "_files_to_download",
+    "_FILE_DOWNLOAD_TOKEN",
+    "_WEBUI_URL",
+]:
+    globals().pop(_tmp_var, None)
+del _tmp_var
 
 # ============================================================
 # USER CODE BEGINS

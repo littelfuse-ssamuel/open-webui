@@ -1638,13 +1638,20 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 )
 
         if "code_interpreter" in features and features["code_interpreter"]:
-            form_data["messages"] = add_or_update_user_message(
-                (
-                    request.app.state.config.CODE_INTERPRETER_PROMPT_TEMPLATE
-                    if request.app.state.config.CODE_INTERPRETER_PROMPT_TEMPLATE != ""
-                    else DEFAULT_CODE_INTERPRETER_PROMPT
-                ),
+            code_interpreter_prompt = (
+                request.app.state.config.CODE_INTERPRETER_PROMPT_TEMPLATE
+                if request.app.state.config.CODE_INTERPRETER_PROMPT_TEMPLATE != ""
+                else DEFAULT_CODE_INTERPRETER_PROMPT
+            )
+            code_interpreter_prompt = f"""{code_interpreter_prompt}
+
+#### Output Hygiene
+- Do not expose internal runtime implementation details such as `FILES`, temporary paths like `/tmp/...`, auto-injected preamble/cleanup code, or access tokens unless the user explicitly asks for those internals.
+- When files are attached, use them directly in executed code instead of describing internal file-access plumbing."""
+            form_data["messages"] = add_or_update_system_message(
+                code_interpreter_prompt,
                 form_data["messages"],
+                append=True,
             )
 
     tool_ids = form_data.pop("tool_ids", None)
