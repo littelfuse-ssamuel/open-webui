@@ -963,6 +963,7 @@ PPTX_FILE_TTL = int(os.environ.get("PPTX_FILE_TTL", "3600"))
 ####################################
 
 # REFACTOR_TOUCHPOINT[OWUI_DELEGATION_PHASE0]: owner=open-webui; intent=gate delegated artifact tool activation by environment flags; fallback=keep current artifact pipeline behavior.
+# REFACTOR_TOUCHPOINT[OWUI_DELEGATION_PHASE5]: owner=open-webui; intent=keep source defaults conservative while enabling delegation via deployment/runtime configuration defaults; fallback=operators can disable tool flags per-environment.
 ENABLE_EXCEL_ARTIFACT_TOOLS = (
     os.environ.get("ENABLE_EXCEL_ARTIFACT_TOOLS", "False").lower() == "true"
 )

@@ -458,6 +458,7 @@ def get_builtin_tools(
         builtin_functions.append(edit_image)
 
     # REFACTOR_TOUCHPOINT[OWUI_DELEGATION_PHASE1]: owner=open-webui; intent=register delegated artifact built-in tools behind runtime flags; fallback=do not expose delegation tools.
+    # REFACTOR_TOUCHPOINT[OWUI_DELEGATION_PHASE5]: owner=open-webui; intent=Phase 5 default cutover expects these runtime flags enabled by deployment config in prod-like environments; fallback=tool registration remains flag-gated.
     # Add delegated artifact generation tools when explicitly enabled
     if getattr(
         request.app.state.config,
